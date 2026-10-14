@@ -1,0 +1,19 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 200 200" role="img" aria-label="Raven, virtuální učitelka">
+<defs><radialGradient id="bg" cx=".5" cy=".4" r=".7"><stop offset="0" stop-color="#3a070c"/><stop offset="1" stop-color="#0a0a0a"/></radialGradient>
+<linearGradient id="hair" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#1c1c22"/><stop offset="1" stop-color="#050507"/></linearGradient></defs>
+<rect width="200" height="200" rx="24" fill="url(#bg)"/>
+<path d="M48 200 C40 120 50 50 100 42 C150 50 160 120 152 200Z" fill="url(#hair)"/>
+<path d="M58 200 C62 168 78 158 100 156 C122 158 138 168 142 200Z" fill="#141416"/>
+<path d="M86 156 L100 178 L114 156" fill="none" stroke="#8b0000" stroke-width="3"/>
+<circle cx="100" cy="180" r="4" fill="#c0c0c8"/>
+<rect x="92" y="128" width="16" height="22" fill="#e9dcd6"/>
+<ellipse cx="100" cy="100" rx="30" ry="36" fill="#f1e4de"/>
+<path d="M68 96 C70 60 90 52 104 54 C124 56 134 72 132 96 C122 76 104 70 86 74 C78 80 72 88 68 96Z" fill="#0d0d10"/>
+<path d="M80 96 q8 -6 16 0" fill="none" stroke="#2a2a2e" stroke-width="3" stroke-linecap="round"/>
+<path d="M104 96 q8 -6 16 0" fill="none" stroke="#2a2a2e" stroke-width="3" stroke-linecap="round"/>
+<ellipse cx="88" cy="102" rx="5" ry="3.5" fill="#2a2a2e"/><ellipse cx="112" cy="102" rx="5" ry="3.5" fill="#2a2a2e"/>
+<circle cx="88" cy="102" r="1.3" fill="#c0c0c8"/><circle cx="112" cy="102" r="1.3" fill="#c0c0c8"/>
+<path d="M100 106 l-3 10 h5" fill="none" stroke="#c9b5ad" stroke-width="1.5"/>
+<path d="M91 122 q9 6 18 0" fill="#7a0f1a" stroke="#5a0a12" stroke-width="1.5"/>
+<circle cx="70" cy="110" r="2.5" fill="#c0c0c8"/><circle cx="130" cy="110" r="2.5" fill="#c0c0c8"/>
+</svg>
