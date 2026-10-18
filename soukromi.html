@@ -1,0 +1,70 @@
+<!doctype html><html lang="cs"><head><meta charset="UTF-8"><meta name="robots" content="noindex, nofollow"><meta name="referrer" content="no-referrer"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="theme-color" content="#0a0a0a"><link rel="icon" href="icon.svg"><title>Soukromí a pravidla – BAND APP</title><style>*{box-sizing:border-box}body{margin:0;background:#070707;color:#f2f2f2;font:16px system-ui,Arial}header{padding:20px 18px;background:linear-gradient(135deg,#2a0508,#070707);border-bottom:1px solid #5a0a12}h1{margin:0;font-size:28px;letter-spacing:2px}h1 span{color:#e0202f}small,.muted{color:#c0c0c8}main{max-width:640px;margin:auto;padding:16px}.panel{background:#161616;border:1px solid #3a1a1e;border-radius:18px;padding:18px;margin-bottom:16px}h2{font-size:21px;margin-top:0}button,input,textarea{font:inherit}button.primary{background:#b3001b;color:#fff;border:0;border-radius:10px;padding:12px 17px;cursor:pointer}button.secondary{background:#2a2a2e;color:#fff;border:1px solid #8b0000;border-radius:10px;padding:10px 14px;cursor:pointer}input{accent-color:#b3001b}label{display:block;margin:10px 0 4px}[hidden]{display:none!important}.footer{padding:20px;text-align:center;color:#9a9aa2;font-size:13px}a{color:#ffb3ba}h3{font-size:18px;margin:18px 0 6px;color:#ff5a6a}ol,ul{padding-left:22px;line-height:1.55}li{margin:4px 0}p{line-height:1.55}.ph{background:#3a070c;border:1px dashed #e0202f;border-radius:8px;padding:2px 6px}</style></head><body>
+<header><div style="max-width:640px;margin:auto"><h1>BAND <span>APP</span></h1><small>Soukromí a pravidla skupiny (Kamarádky)</small></div></header>
+<main>
+<section class="panel" id="pravidla"><h2>📜 Pravidla skupiny</h2>
+<ol>
+<li><b>Co to je:</b> soukromý chat pro kamarádky, které zakladatelka skupiny sama pozve. Je zdarma, bez reklam a nic se tu neprodává.</li>
+<li><b>Jen přezdívka:</b> o tobě se ukládá jen přezdívka a zprávy, které napíšeš. Nepíšeš jméno, e-mail ani telefon.</li>
+<li><b>Kdo tě pustí dovnitř:</b> do skupiny tě pustí jen zakladatelka. Může tě taky odebrat nebo zablokovat. Nikdo jiný skupinu v aplikaci nespravuje.</li>
+<li><b>Kdo vidí zprávy:</b> v aplikaci jen schválené členky skupiny. Nikdo tě nesleduje a nikdo tvoje zprávy nekontroluje.</li>
+<li><b>Poctivě:</b> zprávy nejsou koncově šifrované. Technicky k nim má přístup správce aplikace a Google, u kterého jsou uložené (Firebase; zprávy v EU). Správce slibuje, že je číst nebude. Je to slib, ne technická ochrana.</li>
+<li><b>Jak dlouho:</b> zprávy starší než 30 dní se nezobrazují. Ze serveru se úplně smažou, jen když běží automatický úklid.</li>
+<li><b>Buď v pohodě:</b> piš hezky, nikoho neurážej, neposílej nic, co by někomu ublížilo.</li>
+<li><b>Chraň se:</b> neposílej adresu, telefon, hesla, fotky ani nic, co by tě prozradilo. Pozvánku neposílej dál.</li>
+<li><b>Odejít můžeš kdykoli:</b> tlačítkem „Opustit skupinu“. Když chceš smazat všechno o sobě nebo se na něco zeptat, napiš správci aplikace: <a href="mailto:vholub.pro@seznam.cz" id="contactMail">vholub.pro@seznam.cz</a>.</li>
+<li><b>Když se ti něco nelíbí:</b> můžeš odejít, požádat o smazání, nebo si stěžovat u Úřadu pro ochranu osobních údajů (<a href="https://uoou.gov.cz" rel="noopener noreferrer">uoou.gov.cz</a>).</li>
+</ol>
+<p><b>Odesláním žádosti o přijetí (nebo založením skupiny) tato pravidla přijímáš.</b></p>
+</section>
+
+<section class="panel" id="soukromi"><h2>🔒 Informace o zpracování osobních údajů</h2>
+<p class="muted">Podle čl. 13 GDPR, jednoduše. Platí pro BAND APP Kamarádky.</p>
+
+<h3>Kdo údaje zpracovává (správce)</h3>
+<!-- TODO(1p): Identita provozovatele (správce) – čeká se na odpověď Úřadu pro ochranu osobních údajů (ÚOOÚ),
+     zda a v jaké podobě musí být uvedena. Do té doby jen kontaktní e-mail. Bez výslovného souhlasu správce
+     sem NEVKLÁDAT žádné jméno. -->
+<p id="operator">Provozovatel: soukromá osoba – kontakt <a href="mailto:vholub.pro@seznam.cz">vholub.pro@seznam.cz</a><br>
+<span class="muted" data-pending="operator-identity">Další údaje o provozovateli doplníme podle odpovědi Úřadu pro ochranu osobních údajů, na kterou čekáme.</span></p>
+<p>BAND APP je soukromý nekomerční projekt. Pověřence pro ochranu osobních údajů nemá.</p>
+
+<h3>Jaké údaje</h3>
+<ul>
+<li>přezdívka, kterou si sama zvolíš, a zprávy, které napíšeš,</li>
+<li>název skupiny, členství ve skupině (čeká / členka / zakladatelka) a seznam zablokovaných,</li>
+<li>náhodné ID účtu (anonymní účet Firebase, bez e-mailu a telefonu); máš-li obnovovací kód, i jeho vymyšlená adresa účtu a otisk (hash) jeho tajemství,</li>
+<li>tvoje soukromá záloha (seznam skupin, hvězdičky, blokované), kterou v aplikaci čte jen tvůj účet,</li>
+<li>technické údaje, které Google při přihlášení zpracovává sám (IP adresa, typ prohlížeče).</li>
+</ul>
+<p>Žádné jméno, e-mail, telefon, poloha ani fotky. Žádná analytika, reklama ani profilování. Kamarádky nepoužívají kameru ani mikrofon. (Nahrávací studio BAND APP ukládá nahrávky jen v tomto zařízení a nikam je neposílá.)</p>
+
+<h3>Proč a na jakém právním základě</h3>
+<p>Abychom ti poskytli službu, o kterou sama požádáš: soukromý chat ve skupině podle <a href="#pravidla">Pravidel skupiny</a>.
+Právní základ: <b>plnění smlouvy</b> (čl. 6 odst. 1 písm. b GDPR). Smlouvou jsou Pravidla skupiny, která přijímáš odesláním žádosti o přijetí.
+Přezdívku potřebujeme, jinak tě skupina nepozná; bez ní se připojit nejde.</p>
+
+<h3>Kde a kdo k údajům má přístup</h3>
+<ul>
+<li>Údaje ukládá <b>Google</b> (služba Firebase) jako <b>zpracovatel</b>. Zprávy, skupiny a zálohy jsou v databázi Cloud Firestore v EU, v lokalitě <code>europe-west3</code> (Frankfurt).</li>
+<li>Přihlášení (Firebase Authentication: ID účtu, IP adresa, typ prohlížeče) Google zpracovává <b>jen v USA</b>. Předání do USA probíhá podle rámce EU-USA pro ochranu údajů (Data Privacy Framework), k němuž se Google přihlásil, a smluvních doložek Firebase.</li>
+<li>V aplikaci vidí zprávy jen schválené členky skupiny. Zprávy <b>nejsou koncově šifrované</b>: technicky k nim má přístup správce projektu Firebase, Google a servisní účet automatického úklidu (pokud je zapnutý). Správce slibuje, že je číst nebude. Je to slib, ne technická ochrana.</li>
+<li>Nikomu dalšímu údaje nepředáváme a neprodáváme.</li>
+</ul>
+
+<h3>Jak dlouho</h3>
+<ul>
+<li>Zprávy starší než 30 dní se nikomu nezobrazí. Ze serveru se úplně smažou, <b>jen když běží automatický úklid</b>; jinak tam fyzicky zůstávají, dokud je nesmaže správce.</li>
+<li>Členství trvá, dokud skupinu neopustíš, nebo tě zakladatelka neodebere.</li>
+<li>Pozvánka platí 24 hodin a jen jednou. Automatický úklid (pokud běží) maže pozvánky 7 dní po vypršení.</li>
+<li>Účet a záloha zůstávají, dokud nepožádáš o smazání. Google podle svých pravidel uchovává IP adresy z přihlášení několik týdnů a po smazání účtu odstraní údaje ze záloh do 180 dní.</li>
+</ul>
+
+<h3>Tvoje práva</h3>
+<p>Máš právo na přístup ke svým údajům, jejich opravu, výmaz, omezení zpracování a přenositelnost. Skupinu můžeš kdykoli opustit tlačítkem „Opustit skupinu“.
+O cokoli z toho požádej e-mailem na <a href="mailto:vholub.pro@seznam.cz">vholub.pro@seznam.cz</a>.</p>
+<p>Máš také právo podat stížnost u <b>Úřadu pro ochranu osobních údajů</b>, Pplk. Sochora 27, 170 00 Praha 7, <a href="https://uoou.gov.cz" rel="noopener noreferrer">uoou.gov.cz</a>.</p>
+<p>Automatizované rozhodování ani profilování neprobíhá.</p>
+</section>
+<p class="muted" style="text-align:center"><a href="index.html" onclick="if(history.length>1){history.back();return false}">← Zpět</a></p>
+</main>
+<div class="footer">BAND APP • Soukromý hudební svět 🖤 • stránka funguje i offline</div></body></html>
