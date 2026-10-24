@@ -35,17 +35,19 @@ window.bandPlayEm=function(){
   fq.forEach((f,i)=>{const len=Math.floor(sr*2.2),buf=ctx.createBuffer(1,len,sr),d=buf.getChannelData(0),N=Math.round(sr/f);const ring=new Float32Array(N);for(let k=0;k<N;k++)ring[k]=Math.random()*2-1;let p=0;for(let k=0;k<len;k++){const a=ring[p],b=ring[(p+1)%N];d[k]=a;ring[p]=.996*.5*(a+b);p=(p+1)%N}
   const src=ctx.createBufferSource(),g=ctx.createGain();src.buffer=buf;g.gain.value=.32;src.connect(g).connect(master);src.start(ctx.currentTime+.05+i*.07);window.__bandEmNodes++});$('emAudioStatus').textContent='▶ Hraje E moll…'};
   ctx.state==='suspended'?ctx.resume().then(go):go()};
+function sayStep(){if(typeof window.ravenSay==='function')try{window.ravenSay('em-step'+(step+1))}catch(e){}}
 function render(){const S=STEPS[step];$('emStepTitle').textContent=S.t;$('emRaven').textContent=S.r;$('emRaven').classList.remove('flash');
 $('emProgress').innerHTML=STEPS.map((_,i)=>`<span class="${i<=step?'on':''}" aria-label="Krok ${i+1}">${i+1}</span>`).join('');
 $('emBoardWrap').hidden=!(step===1||step===3);$('emPlayBox').hidden=!(step===2||step===3);$('emPlay').textContent=step===3?'♪ Přehrát ukázku':'♪ Přehrát Em';
 $('emPractice').hidden=step!==3;$('emDone').hidden=step!==4;$('emPrev').hidden=step===0||step===4;$('emNext').hidden=step>=3;
-if(step===4){const d=JSON.parse(localStorage.getItem(KEY)||'null');$('emSaved').textContent=d?`Dokončení uloženo v tomto zařízení (${new Date(d.date).toLocaleString('cs-CZ')}).`:''}}
+if(step===4){const d=JSON.parse(localStorage.getItem(KEY)||'null');$('emSaved').textContent=d?`Dokončení uloženo v tomto zařízení (${new Date(d.date).toLocaleString('cs-CZ')}).`:''}
+sayStep()}
 function overview(){const d=localStorage.getItem(KEY);$('emBadge').textContent=d?'✔ Dokončeno':'';}
 window.bandOpenEm=function(){step=0;const cl=$('chordLesson');if(cl)cl.hidden=true;$('emLesson').hidden=false;render();$('emLesson').scrollIntoView({behavior:'smooth'})};
 $('emBoardWrap').querySelector('.fret').innerHTML=fretboard();
 $('emBoard').addEventListener('click',e=>{const r=e.target.closest('.hit');if(r)explain(+r.dataset.s,+r.dataset.f)});
 $('emPlay').onclick=window.bandPlayEm;$('emPrev').onclick=()=>{step--;render()};$('emNext').onclick=()=>{step++;render()};$('emNext4').onclick=$('emFinish').onclick=()=>{localStorage.setItem(KEY,JSON.stringify({done:true,date:new Date().toISOString()}));step=4;render();overview()};
 $('emNext4').onclick=()=>{step=4;localStorage.setItem(KEY,JSON.stringify({done:true,date:new Date().toISOString()}));render();overview()};
-$('emRepeat').onclick=()=>{const r=$('emRaven');r.classList.remove('flash');void r.offsetWidth;r.classList.add('flash');r.scrollIntoView({behavior:'smooth',block:'center'})};
+$('emRepeat').onclick=()=>{const r=$('emRaven');r.classList.remove('flash');void r.offsetWidth;r.classList.add('flash');r.scrollIntoView({behavior:'smooth',block:'center'});sayStep()};
 $('emBack').onclick=()=>{$('emLesson').hidden=true;$('emOverview').scrollIntoView({behavior:'smooth'})};$('emAgain').onclick=()=>{step=0;render()};
 overview();window.__bandEm={EM,STR}})();
