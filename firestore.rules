@@ -1,6 +1,6 @@
 rules_version = '2';
-// BAND APP – Kamarádky (1. etapa, revize 1p, PRODUKČNÍ projekt band-app-7c9ca): bezpečnostní pravidla Firestore.
-// Obsah pravidel je beze změny převzatý z otestované testovací revize 1h (rozdíl je jen v této hlavičce).
+// BAND APP – Kamarádky (verze 1.1, PRODUKČNÍ projekt band-app-7c9ca): bezpečnostní pravidla Firestore.
+// Proti 1p (= otestovaná 1h) přibyla JEN větev B u /rooms/{roomId}/members/{uid} update: změna vlastní přezdívky.
 // Bez souhlasu (pole „consent“ nové záznamy mít NESMÍ). Dotaz na VLASTNÍ členství přes všechny skupiny
 // (obnova účtu bez zálohy) – viz „Vlastní členství“ dole; potřebuje index members.uid (Collection group) – firestore.indexes.json.
 // Skupinu spravuje jen její zakladatelka. Žádný jiný (nadřízený, rodičovský) přístup ke skupinám,
@@ -176,7 +176,8 @@ service cloud.firestore {
             )
           );
 
-        allow update: if isOwner(roomId) && (
+        // 1.1: dvě samostatné větve spojené „||“. Větev A (zakladatelka) je obsahem beze změny proti 1p.
+        allow update: if (isOwner(roomId) && (
           // Schválení čekající členky (jen zakladatelka).
           (
             resource.data.status == 'pending'
@@ -198,6 +199,15 @@ service cloud.firestore {
             && request.resource.data.status == 'approved'
             && roomAfter(roomId).ownerUid != uid
           )
+        )) || (
+          // B) 1.1 – změna VLASTNÍ přezdívky: jen svůj záznam, jen pole „nick“ (status, invite, uid, joinedAt…
+          //    se tím změnit nedají), platná délka 1–24, ne zablokovaná, jen existující členka/čekající/zakladatelka.
+          signedIn()
+          && uid == me()
+          && resource.data.status in ['owner', 'approved', 'pending']
+          && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['nick'])
+          && validNick(request.resource.data.nick)
+          && notBlocked(roomId)
         );
 
         // Zakladatelka může členku odebrat; každá může sama odejít (zakladatelka ne – nejdřív předá vlastnictví).
