@@ -25,17 +25,23 @@ if(need===0)m+=fr?'Tady nemačkej. U Em necháváš tuto strunu otevřenou – h
 else if(fr===need)m+=`Tady zmáčkni – ${FN[EM.fingers[si]]} (prst ${EM.fingers[si]}).`;
 else m+=`Tady ne. Na této struně patří ${FN[EM.fingers[si]]} (prst ${EM.fingers[si]}) na ${need}. pražec.`;
 $('emExplain').textContent=m;document.querySelectorAll('#emBoard .hit').forEach(r=>r.setAttribute('fill',(+r.dataset.s===si&&+r.dataset.f===fr)?'rgba(224,32,47,.25)':'transparent'))}
-let ctx;window.bandPlayEm=function(){ctx=ctx||new (window.AudioContext||window.webkitAudioContext)();window.__bandEmCtx=ctx;window.__bandEmNodes=0;const go=()=>{const fq=[82.41,123.47,164.81,196.00,246.94,329.63],sr=ctx.sampleRate,master=ctx.createGain();master.gain.value=.9;master.connect(ctx.destination);
-fq.forEach((f,i)=>{const len=Math.floor(sr*2.2),buf=ctx.createBuffer(1,len,sr),d=buf.getChannelData(0),N=Math.round(sr/f);const ring=new Float32Array(N);for(let k=0;k<N;k++)ring[k]=Math.random()*2-1;let p=0;for(let k=0;k<len;k++){const a=ring[p],b=ring[(p+1)%N];d[k]=a;ring[p]=.996*.5*(a+b);p=(p+1)%N}
-const src=ctx.createBufferSource(),g=ctx.createGain();src.buffer=buf;g.gain.value=.32;src.connect(g).connect(master);src.start(ctx.currentTime+.05+i*.07);window.__bandEmNodes++});$('emAudioStatus').textContent='▶ Hraje E moll…'};
-ctx.state==='suspended'?ctx.resume().then(go):go()};
+window.bandPlayEm=function(){
+  if(typeof window.bandPlayChord==='function'){
+    return window.bandPlayChord(EM.frets,{label:'E moll',statusEl:'emAudioStatus'});
+  }
+  // Záloha, kdyby chords.js nebyl načtený (stejný Karplus–Strong + resume).
+  let ctx=window.__bandEmCtx||new (window.AudioContext||window.webkitAudioContext)();window.__bandEmCtx=ctx;window.__bandEmNodes=0;
+  const go=()=>{const fq=[82.41,123.47,164.81,196.00,246.94,329.63],sr=ctx.sampleRate,master=ctx.createGain();master.gain.value=.9;master.connect(ctx.destination);
+  fq.forEach((f,i)=>{const len=Math.floor(sr*2.2),buf=ctx.createBuffer(1,len,sr),d=buf.getChannelData(0),N=Math.round(sr/f);const ring=new Float32Array(N);for(let k=0;k<N;k++)ring[k]=Math.random()*2-1;let p=0;for(let k=0;k<len;k++){const a=ring[p],b=ring[(p+1)%N];d[k]=a;ring[p]=.996*.5*(a+b);p=(p+1)%N}
+  const src=ctx.createBufferSource(),g=ctx.createGain();src.buffer=buf;g.gain.value=.32;src.connect(g).connect(master);src.start(ctx.currentTime+.05+i*.07);window.__bandEmNodes++});$('emAudioStatus').textContent='▶ Hraje E moll…'};
+  ctx.state==='suspended'?ctx.resume().then(go):go()};
 function render(){const S=STEPS[step];$('emStepTitle').textContent=S.t;$('emRaven').textContent=S.r;$('emRaven').classList.remove('flash');
 $('emProgress').innerHTML=STEPS.map((_,i)=>`<span class="${i<=step?'on':''}" aria-label="Krok ${i+1}">${i+1}</span>`).join('');
 $('emBoardWrap').hidden=!(step===1||step===3);$('emPlayBox').hidden=!(step===2||step===3);$('emPlay').textContent=step===3?'♪ Přehrát ukázku':'♪ Přehrát Em';
 $('emPractice').hidden=step!==3;$('emDone').hidden=step!==4;$('emPrev').hidden=step===0||step===4;$('emNext').hidden=step>=3;
 if(step===4){const d=JSON.parse(localStorage.getItem(KEY)||'null');$('emSaved').textContent=d?`Dokončení uloženo v tomto zařízení (${new Date(d.date).toLocaleString('cs-CZ')}).`:''}}
 function overview(){const d=localStorage.getItem(KEY);$('emBadge').textContent=d?'✔ Dokončeno':'';}
-window.bandOpenEm=function(){step=0;$('emLesson').hidden=false;render();$('emLesson').scrollIntoView({behavior:'smooth'})};
+window.bandOpenEm=function(){step=0;const cl=$('chordLesson');if(cl)cl.hidden=true;$('emLesson').hidden=false;render();$('emLesson').scrollIntoView({behavior:'smooth'})};
 $('emBoardWrap').querySelector('.fret').innerHTML=fretboard();
 $('emBoard').addEventListener('click',e=>{const r=e.target.closest('.hit');if(r)explain(+r.dataset.s,+r.dataset.f)});
 $('emPlay').onclick=window.bandPlayEm;$('emPrev').onclick=()=>{step--;render()};$('emNext').onclick=()=>{step++;render()};$('emNext4').onclick=$('emFinish').onclick=()=>{localStorage.setItem(KEY,JSON.stringify({done:true,date:new Date().toISOString()}));step=4;render();overview()};
