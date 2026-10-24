@@ -1,4 +1,4 @@
-/* BAND APP v5.1 – seznam hlasů Raven vložený přímo do JS (funguje i přes file:// bez serveru). Generováno z audio/voices.json. */
+/* BAND APP – seznam hlasů Raven (Kasandra). Chord clips 1.1.1: české výslovnosti. */
 window.BANDAPP_VOICES={
  "version": 1,
  "texts": {
@@ -19,7 +19,17 @@ window.BANDAPP_VOICES={
   "em-step3": "Klikni na „Přehrát Em“ a poslechni si, jak E moll zní. Struny zazní postupně od nejhlubší.",
   "em-step4": "„Polož prostředníček na druhý pražec struny A a prsteníček na druhý pražec struny D. Ostatní struny nech otevřené. Zahraj pomalu všech šest strun.“",
   "em-step5": "„Skvělá práce! Máš za sebou svůj první akord. Příště se naučíme Am.“",
-  "sample": "Ahoj, já jsem Raven. Takhle zním, když ti vysvětluju akordy."
+  "sample": "Ahoj, já jsem Raven. Takhle zním, když ti vysvětluju akordy.",
+  "chord-E": "E dur: ukazováček na první pražec struny G, prostředníček na druhý pražec A, prsteníček na druhý pražec D. Zahraj všech šest strun.",
+  "chord-A": "A dur: nehraj tlustou E. Prostředníček na druhý pražec D, ukazováček na druhý pražec G, prsteníček na druhý pražec H. Tenká e otevřená.",
+  "chord-Dm": "D moll: hraj od struny D. Ukazováček na první pražec tenké e, prostředníček na druhý pražec G, prsteníček na třetí pražec H.",
+  "chord-F": "F dur (barre): ukazováček položí napříč všechny struny na prvním pražci. Prostředníček na druhý pražec G, prsteníček na třetí A, malíček na třetí D.",
+  "chord-B7": "B7: nehraj tlustou E. Prostředníček na druhý pražec A, ukazováček na první pražec D, prsteníček na druhý pražec G, malíček na druhý pražec tenké e. H otevřená.",
+  "chord-A5": "Power akord A5: otevřená A, ukazováček na druhém pražci D, prsteníček na druhém pražci G. Tlustou E a tenké struny tlum.",
+  "chord-D5": "Power akord D5: otevřená D, ukazováček na druhém pražci G, prsteníček na třetím pražci H. Ostatní struny tlum.",
+  "chord-G5": "Power akord G5: ukazováček na třetím pražci tlusté E, prsteníček na pátém A, malíček na pátém D. Ostatní struny tlum.",
+  "chord-C5": "Power akord C5: ukazováček na třetím pražci A, prsteníček na pátém D, malíček na pátém G. Ostatní struny tlum.",
+  "chord-F5": "Power akord F5: ukazováček na prvním pražci tlusté E, prsteníček na třetím A, malíček na třetím D. Ostatní struny tlum."
  },
  "voices": [
   {
@@ -48,7 +58,17 @@ window.BANDAPP_VOICES={
     "em-step3": "audio/kasandra/em-step3.mp3",
     "em-step4": "audio/kasandra/em-step4.mp3",
     "em-step5": "audio/kasandra/em-step5.mp3",
-    "sample": "audio/kasandra/sample.mp3"
+    "sample": "audio/kasandra/sample.mp3",
+    "chord-E": "audio/kasandra/chord-E.mp3",
+    "chord-A": "audio/kasandra/chord-A.mp3",
+    "chord-Dm": "audio/kasandra/chord-Dm.mp3",
+    "chord-F": "audio/kasandra/chord-F.mp3",
+    "chord-B7": "audio/kasandra/chord-B7.mp3",
+    "chord-A5": "audio/kasandra/chord-A5.mp3",
+    "chord-D5": "audio/kasandra/chord-D5.mp3",
+    "chord-G5": "audio/kasandra/chord-G5.mp3",
+    "chord-C5": "audio/kasandra/chord-C5.mp3",
+    "chord-F5": "audio/kasandra/chord-F5.mp3"
    }
   }
  ]
