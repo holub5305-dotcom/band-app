@@ -9,6 +9,8 @@ HERE = os.path.dirname(os.path.abspath(__file__)); sys.path.insert(0, HERE)
 import upgrade_helpers as H
 from upgrade_helpers import ok
 OLD, NEW, ROLL = os.environ['OLD'], os.environ['NEW'], os.environ['ROLL']
+# Verze nové aplikace a čísla mezipamětí (výchozí = vydání 1.2.0; pro 1.2.1: NEWV=1.2.1 NEWC=12 ROLLC=13)
+NEWV, NEWC, ROLLC = os.environ.get('NEWV', '1.2.0'), os.environ.get('NEWC', '11'), os.environ.get('ROLLC', '12')
 SEED_CWD = os.environ['SEED_CWD']; SEED = os.path.join(SEED_CWD, '_seed_vc.mjs'); shutil.copy(os.path.join(HERE, 'seed.mjs'), SEED)
 SERVE = os.environ.get('SERVE', '/tmp/bandapp-serve'); LINK = SERVE + '/band-app'; PORT = 8796
 BASE = f'http://localhost:{PORT}/band-app/'; URL = BASE + 'index.html?emulator=1'
@@ -76,10 +78,10 @@ async def main():
             ok('1.1.3: výchozí data (2 nahrávky, oblíbené, lekce, přezdívka, skupina)', len(r0) == 2 and {'bandapp-favorites', 'bandapp-lesson-em-done', 'bandapp-friends-rooms', 'bandapp-friends-nick'} <= set(ls0), sorted(ls0))
             await cA.close()
             # ================= 1.2.0 na stejné adrese =================
-            point(NEW); PH[0] = '1.2.0'
+            point(NEW); PH[0] = NEWV
             cA, A = await openA(p); await A.goto(URL); await A.wait_for_timeout(800)
             flow = await A.evaluate(H.UPDATE_FLOW); ok('1.2.0: SW aktualizace → activated', flow[-1] == 'activated', flow)
-            ck = await A.evaluate('caches.keys()'); ok('1.2.0: jen band-app-pages-11 (pages-10 smazána)', ck == ['band-app-pages-11'], ck)
+            ck = await A.evaluate('caches.keys()'); ok('1.2.0: jen band-app-pages-11 (pages-10 smazána)', ck == ['band-app-pages-' + NEWC], ck)
             await A.reload(); await A.wait_for_timeout(2000)
             ls1 = await A.evaluate(H.LSK); diff = [k for k in ls0 if ls1.get(k) != ls0[k]]
             ok('1.2.0: localStorage – všechny původní klíče bit po bitu stejné', not diff, {'změněné': diff, 'nové': sorted(set(ls1) - set(ls0))})
@@ -87,11 +89,11 @@ async def main():
             idb1 = await A.evaluate(IDBN); ok('1.2.0: databáze IndexedDB zachované', set(idb0) <= set(idb1), (idb0, idb1))
             ok('1.2.0: stejné přihlášení (uid)', await A.evaluate(UID) == uA)
             m1 = await H.cdp_manifest(cA, A); ok('1.2.0: manifest identický (id, start_url, scope, název, ikony)', m1[0].get('data') == m0[0].get('data') and m1[0].get('url') == m0[0].get('url') and not m1[1].get('installabilityErrors'), m1[0].get('url'))
-            ok('1.2.0: patička „BAND APP 1.2.0“, menu VIDEOCHAT', 'BAND APP 1.2.0' in await A.inner_text('.footer') and await A.locator('nav.bandnav a[href="#videochat"]').count() == 1)
+            ok('1.2.0: patička „BAND APP 1.2.0“, menu VIDEOCHAT', 'BAND APP ' + NEWV in await A.inner_text('.footer') and await A.locator('nav.bandnav a[href="#videochat"]').count() == 1)
             ok('1.2.0: Kamarádky zobrazeny', await wait(A, "document.getElementById('friendsApp').innerText.includes('Kamarádky')"))
             m = await msgs(A, room); ok('1.2.0: všechny 3 zprávy čitelné', isinstance(m, list) and len(m) == 3 and 'Před aktualizací' in m, m)
             ok('1.2.0: odeslání zprávy jako dřív', await A.evaluate(SEND % (room, 'Po aktualizaci')) == 'ok')
-            await H.features(A, '1.2.0')
+            await H.features(A, NEWV)
             # videohovor A (aktualizovaná instalace) ↔ B
             await B.reload(); await B.wait_for_timeout(800)
             await B.evaluate(f"localStorage.setItem('bandapp-friends-rooms', JSON.stringify([{{id:'{room}',name:'Kamarádky',role:'approved'}}]));localStorage.setItem('bandapp-friends-nick', JSON.stringify('Amy'))")
@@ -111,7 +113,7 @@ async def main():
             point(ROLL); PH[0] = 'návrat'
             cA, A = await openA(p); await A.goto(URL); await A.wait_for_timeout(800)
             flow = await A.evaluate(H.UPDATE_FLOW); ok('návrat: SW aktualizace → activated', flow[-1] == 'activated', flow)
-            ck = await A.evaluate('caches.keys()'); ok('návrat: jen band-app-pages-12 (pages-11 smazána)', ck == ['band-app-pages-12'], ck)
+            ck = await A.evaluate('caches.keys()'); ok('návrat: jen band-app-pages-12 (pages-11 smazána)', ck == ['band-app-pages-' + ROLLC], ck)
             await A.reload(); await A.wait_for_timeout(2000)
             ls2 = await A.evaluate(H.LSK); diff = [k for k in ls1 if ls2.get(k) != ls1[k]]
             ok('návrat: localStorage bit po bitu stejné jako v 1.2.0', not diff, {'změněné': diff})
