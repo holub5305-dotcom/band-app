@@ -1,0 +1,10 @@
+# Cloudflare Worker pro krátkodobé TURN údaje BAND APP. Tajemství sem NEPATŘÍ (nastav je přes `wrangler secret put`).
+name = "bandapp-turn"
+main = "worker.js"
+compatibility_date = "2026-10-01"
+workers_dev = true
+
+[vars]
+FIREBASE_PROJECT_ID = "band-app-test-9fc3e"   # nejdřív test; pro produkci změň na band-app-7c9ca
+ALLOWED_ORIGIN = "https://holub5305-dotcom.github.io"
+TTL_SECONDS = "14400"

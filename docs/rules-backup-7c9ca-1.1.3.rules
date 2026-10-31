@@ -1,0 +1,254 @@
+rules_version = '2';
+// BAND APP – Kamarádky (verze 1.1, PRODUKČNÍ projekt band-app-7c9ca): bezpečnostní pravidla Firestore.
+// Proti 1p (= otestovaná 1h) přibyla JEN větev B u /rooms/{roomId}/members/{uid} update: změna vlastní přezdívky.
+// Bez souhlasu (pole „consent“ nové záznamy mít NESMÍ). Dotaz na VLASTNÍ členství přes všechny skupiny
+// (obnova účtu bez zálohy) – viz „Vlastní členství“ dole; potřebuje index members.uid (Collection group) – firestore.indexes.json.
+// Skupinu spravuje jen její zakladatelka. Žádný jiný (nadřízený, rodičovský) přístup ke skupinám,
+// kontaktům ani zprávám v aplikaci neexistuje.
+// POZOR – co pravidla NEchrání: platí jen pro přístup přes aplikaci/SDK. Vlastník a správci projektu
+// ve Firebase konzoli, servisní účty (Admin SDK) a Google je obcházejí. Data nejsou koncově šifrovaná.
+// Princip: nic se nedá vypsat globálně. Do skupiny se dostane jen ten, kdo má platnou
+// pozvánku (náhodný token) a koho zakladatelka schválí. Zprávy čtou jen schválené členky
+// a jen zprávy mladší než 30 dní. Soukromá záloha (users/{uid}) patří jen svému účtu.
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    function signedIn() { return request.auth != null; }
+    function me() { return request.auth.uid; }
+    function roomPath(roomId) { return /databases/$(database)/documents/rooms/$(roomId); }
+    function memberPath(roomId, uid) { return /databases/$(database)/documents/rooms/$(roomId)/members/$(uid); }
+    function invitePath(token) { return /databases/$(database)/documents/invites/$(token); }
+    function room(roomId) { return get(roomPath(roomId)).data; }
+    function roomAfter(roomId) { return getAfter(roomPath(roomId)).data; }
+    function notBlocked(roomId) { return !(me() in room(roomId).blocked); }
+    function isOwner(roomId) { return signedIn() && exists(roomPath(roomId)) && room(roomId).ownerUid == me(); }
+    function memberStatus(roomId, uid) { return get(memberPath(roomId, uid)).data.status; }
+    // Schválená členka (nebo zakladatelka), která není zablokovaná.
+    function isApproved(roomId) {
+      return signedIn()
+        && exists(memberPath(roomId, me()))
+        && memberStatus(roomId, me()) in ['owner', 'approved']
+        && notBlocked(roomId);
+    }
+    function validNick(n) { return n is string && n.size() >= 1 && n.size() <= 24; }
+    function validToken(t) { return t is string && t.matches('^[A-Za-z0-9_-]{22}$'); }   // 128 bitů v base64url
+    function validRoomName(n) { return n is string && n.size() >= 1 && n.size() <= 40; }
+    // Pozvánka je otevřená: nepoužitá a neprošlá (expiresAt i createdAt + 24 h).
+    function inviteOpen(inv) {
+      return inv.used == false
+        && request.time < inv.expiresAt
+        && request.time < inv.createdAt + duration.value(24, 'h');
+    }
+
+    // ---------- Pozvánky ----------
+    match /invites/{token} {
+      // Kdo zná token, smí si přečíst jen tu jednu pozvánku. Vypsat je smí jen zakladatelka skupiny
+      // (dotaz musí být omezený na roomId její skupiny).
+      allow get: if signedIn();
+      allow list: if signedIn() && isOwner(resource.data.roomId);
+
+      // Pozvánku vytváří jen zakladatelka skupiny; platí max. 24 hodin.
+      allow create: if signedIn()
+        && validToken(token)
+        && request.resource.data.keys().hasOnly(['roomId', 'createdBy', 'createdAt', 'expiresAt', 'used', 'fromNick'])
+        && request.resource.data.keys().hasAll(['roomId', 'createdBy', 'createdAt', 'expiresAt', 'used'])
+        && request.resource.data.createdBy == me()
+        && request.resource.data.used == false
+        && request.resource.data.createdAt == request.time
+        && request.resource.data.expiresAt is timestamp
+        && request.resource.data.expiresAt > request.time
+        // +24 h od vytvoření; 10 minut rezerva na nepřesné hodiny v mobilu
+        // (skutečnou platnost navíc hlídá createdAt + 24 h při přijetí).
+        && request.resource.data.expiresAt <= request.time + duration.value(24, 'h') + duration.value(10, 'm')
+        && (!('fromNick' in request.resource.data) || validNick(request.resource.data.fromNick))
+        && request.resource.data.roomId is string
+        && isOwner(request.resource.data.roomId);
+
+      // JEDINÝ povolený zápis pozvané osoby = přijetí: označit otevřenou pozvánku jako použitou,
+      // a to jen ve stejném zápisu (transakci), ve kterém vzniká její ČEKAJÍCÍ členství
+      // (jednorázové použití; do skupiny ji pak musí pustit zakladatelka).
+      // Odmítnutí se na server NEzapisuje (je jen v zařízení), takže ho nikdo s přeposlaným
+      // odkazem nemůže zneužít ke zneplatnění pozvánky. Jiné změny (status, expiresAt, roomId…) nejdou.
+      allow update: if signedIn()
+        && inviteOpen(resource.data)
+        && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['used', 'usedBy', 'usedAt'])
+        && request.resource.data.used == true
+        && request.resource.data.usedBy == me()
+        && request.resource.data.usedAt == request.time
+        && existsAfter(memberPath(resource.data.roomId, me()))
+        && getAfter(memberPath(resource.data.roomId, me())).data.status == 'pending'
+        && getAfter(memberPath(resource.data.roomId, me())).data.invite == token;
+
+      // Smazat (= zrušit) pozvánku smí jen ta, kdo ji vytvořila, nebo zakladatelka její skupiny.
+      // Pozvaná osoba ani nikdo s přeposlaným odkazem ji smazat nesmí.
+      allow delete: if signedIn()
+        && (resource.data.createdBy == me() || isOwner(resource.data.roomId));
+    }
+
+    // ---------- Soukromá záloha účtu (kontakty, hvězdičky, blokované, seznam skupin) ----------
+    // V aplikaci ji čte a zapisuje výhradně tentýž účet (uid). Žádná jiná uživatelka – ani zakladatelka skupiny.
+    // (Vlastníka projektu ve Firebase konzoli pravidla neomezují – viz hlavička.)
+    match /users/{uid} {
+      allow read, write: if false;
+    }
+    match /users/{uid}/private/{docId} {
+      allow get: if signedIn() && uid == me() && docId == 'state';
+      allow list: if false;
+      allow create, update: if signedIn() && uid == me() && docId == 'state'
+        && request.resource.data.keys().hasOnly(['rooms', 'nick', 'favorites', 'blockedNames', 'updatedAt'])
+        && request.resource.data.rooms is list && request.resource.data.rooms.size() <= 50
+        && request.resource.data.favorites is list && request.resource.data.favorites.size() <= 500
+        && request.resource.data.blockedNames is map && request.resource.data.blockedNames.size() <= 200
+        && request.resource.data.nick is string && request.resource.data.nick.size() <= 24
+        && request.resource.data.updatedAt == request.time;
+      allow delete: if signedIn() && uid == me();
+    }
+
+    // ---------- Místnosti (skupiny) ----------
+    match /rooms/{roomId} {
+      allow get: if isApproved(roomId);
+      allow list: if false;
+
+      allow create: if signedIn()
+        && request.resource.data.keys().hasOnly(['ownerUid', 'name', 'createdAt', 'blocked'])
+        && request.resource.data.keys().hasAll(['ownerUid', 'name', 'createdAt', 'blocked'])
+        && request.resource.data.ownerUid == me()
+        && validRoomName(request.resource.data.name)
+        && request.resource.data.createdAt == request.time
+        && request.resource.data.blocked == [];
+
+      allow update: if isOwner(roomId)
+        && request.resource.data.blocked is list
+        && request.resource.data.blocked.size() <= 100
+        // zakladatelku nejde zablokovat
+        && !(request.resource.data.ownerUid in request.resource.data.blocked)
+        && (
+          // 1) Zakladatelka: název a blokování.
+          (
+            request.resource.data.diff(resource.data).affectedKeys().hasOnly(['name', 'blocked'])
+            && validRoomName(request.resource.data.name)
+          ) || (
+          // 2) Předání vlastnictví (jen zakladatelka) existující schválené člence, která se ve stejném
+          //    zápisu stává 'owner'; původní zakladatelka zůstává běžnou členkou. Jiná cesta
+          //    ke vlastnictví neexistuje – nikdo si ho nemůže sám přisvojit.
+            request.resource.data.diff(resource.data).affectedKeys().hasOnly(['ownerUid'])
+            && request.resource.data.ownerUid is string
+            && request.resource.data.ownerUid != resource.data.ownerUid
+            && !(request.resource.data.ownerUid in resource.data.blocked)
+            && exists(memberPath(roomId, request.resource.data.ownerUid))
+            && get(memberPath(roomId, request.resource.data.ownerUid)).data.status == 'approved'
+            && getAfter(memberPath(roomId, request.resource.data.ownerUid)).data.status == 'owner'
+            && getAfter(memberPath(roomId, me())).data.status == 'approved'
+          )
+        );
+      allow delete: if false;
+
+      // ---------- Členky ----------
+      match /members/{uid} {
+        // Vlastní záznam (i čekající) vidí každá sama; ostatní jen schválené členky.
+        allow get: if signedIn() && (uid == me() || isApproved(roomId));
+        allow list: if isApproved(roomId);
+
+        // A) Zakladatelka zakládá vlastní záznam ve stejné dávce jako skupinu.
+        // B) Pozvaná osoba se přidá jako 'pending' jen s otevřenou pozvánkou téže skupiny,
+        //    kterou ve stejném zápisu označí jako použitou.
+        allow create: if signedIn() && uid == me()
+          && request.resource.data.uid == me()
+          && validNick(request.resource.data.nick)
+          && request.resource.data.joinedAt == request.time
+          && (
+            (
+              request.resource.data.keys().hasOnly(['uid', 'nick', 'status', 'joinedAt'])
+              && request.resource.data.status == 'owner'
+              && !exists(roomPath(roomId))
+              && getAfter(roomPath(roomId)).data.ownerUid == me()
+            ) || (
+              request.resource.data.keys().hasOnly(['uid', 'nick', 'status', 'joinedAt', 'invite'])
+              && request.resource.data.status == 'pending'
+              && validToken(request.resource.data.invite)
+              && exists(roomPath(roomId))
+              && notBlocked(roomId)
+              && exists(invitePath(request.resource.data.invite))
+              && get(invitePath(request.resource.data.invite)).data.roomId == roomId
+              && inviteOpen(get(invitePath(request.resource.data.invite)).data)
+              && getAfter(invitePath(request.resource.data.invite)).data.used == true
+              && getAfter(invitePath(request.resource.data.invite)).data.usedBy == me()
+            )
+          );
+
+        // 1.1: dvě samostatné větve spojené „||“. Větev A (zakladatelka) je obsahem beze změny proti 1p.
+        allow update: if (isOwner(roomId) && (
+          // Schválení čekající členky (jen zakladatelka).
+          (
+            resource.data.status == 'pending'
+            && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['status', 'approvedAt'])
+            && request.resource.data.status == 'approved'
+            && request.resource.data.approvedAt == request.time
+          ) || (
+          // Předání vlastnictví: nová zakladatelka (approved → owner) ve stejném zápisu jako ownerUid.
+            resource.data.status == 'approved'
+            && uid != me()
+            && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['status'])
+            && request.resource.data.status == 'owner'
+            && roomAfter(roomId).ownerUid == uid
+          ) || (
+          // Původní zakladatelka po předání zůstane jako běžná členka.
+            uid == me()
+            && resource.data.status == 'owner'
+            && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['status'])
+            && request.resource.data.status == 'approved'
+            && roomAfter(roomId).ownerUid != uid
+          )
+        )) || (
+          // B) 1.1 – změna VLASTNÍ přezdívky: jen svůj záznam, jen pole „nick“ (status, invite, uid, joinedAt…
+          //    se tím změnit nedají), platná délka 1–24, ne zablokovaná, jen existující členka/čekající/zakladatelka.
+          signedIn()
+          && uid == me()
+          && resource.data.status in ['owner', 'approved', 'pending']
+          && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['nick'])
+          && validNick(request.resource.data.nick)
+          && notBlocked(roomId)
+        );
+
+        // Zakladatelka může členku odebrat; každá může sama odejít (zakladatelka ne – nejdřív předá vlastnictví).
+        allow delete: if signedIn()
+          && uid != roomAfter(roomId).ownerUid
+          && ((isOwner(roomId) && uid != me()) || uid == me());
+      }
+
+      // ---------- Zprávy ----------
+      match /messages/{msgId} {
+        // Číst jde jen zprávy mladší než 30 dní – starší aplikace nevydá nikomu, i když ještě fyzicky existují
+        // (správce projektu ve Firebase konzoli je technicky vidět může, dokud je úklid nesmaže).
+        allow read: if isApproved(roomId)
+          && resource.data.createdAt > request.time - duration.value(30, 'd');
+
+        // Nejde se vydávat za jinou: uid i přezdívka musí sedět s vlastním záznamem členky.
+        allow create: if isApproved(roomId)
+          && request.resource.data.keys().hasOnly(['uid', 'nick', 'text', 'createdAt'])
+          && request.resource.data.uid == me()
+          && request.resource.data.nick == get(memberPath(roomId, me())).data.nick
+          && request.resource.data.text is string
+          && request.resource.data.text.size() >= 1
+          && request.resource.data.text.size() <= 1000
+          && request.resource.data.createdAt == request.time;
+
+        allow update: if false;
+        // Smazat smí autorka svou zprávu a zakladatelka (moderace).
+        allow delete: if isApproved(roomId) && (resource.data.uid == me() || isOwner(roomId));
+      }
+    }
+
+    // ---------- Vlastní členství (1h: obnova účtu) ----------
+    // Dotaz collectionGroup('members').where('uid', '==', <moje uid>) – každá najde JEN svoje záznamy
+    // (i čekající). Cizí členství tímto dotazem vypsat nejde (pravidlo platí pro každý vrácený záznam).
+    match /{path=**}/members/{memberUid} {
+      allow list: if signedIn() && resource.data.uid == me();
+    }
+
+    // Všechno ostatní je zakázané.
+    match /{document=**} {
+      allow read, write: if false;
+    }
+  }
+}
