@@ -50,7 +50,8 @@ ok('cizí iss 401', await st(call(envStatic, await tok({ ...claims('uidA'), iss:
 ok('prošlý token 401', await st(call(envStatic, await tok({ ...claims('uidA'), exp: now - 5 })), 401));
 ok('token z budoucnosti 401', await st(call(envStatic, await tok({ ...claims('uidA'), iat: now + 3600 })), 401));
 ok('neznámý klíč 401', await st(call(envStatic, await tok(claims('uidA'), 'zzz')), 401));
-ok('podvržený podpis 401', await st(call(envStatic, good.replace(/.$/, c => c === 'A' ? 'B' : 'A')), 401));
+// znak uprostřed podpisu (poslední znak base64url nese i výplňové bity – jeho záměna by podpis někdy nezměnila)
+ok('podvržený podpis 401', await st(call(envStatic, (() => { const i = good.lastIndexOf('.') + 20; return good.slice(0, i) + (good[i] === 'A' ? 'B' : 'A') + good.slice(i + 1); })()), 401));
 ok('nesmyslný token 401', await st(call(envStatic, 'abc'), 401));
 ok('neschválená (čekající) členka 403', await st(call(envStatic, await tok(claims('uidPending'))), 403));
 ok('zablokovaná členka 403', await st(call(envStatic, await tok(claims('uidBlocked'))), 403));

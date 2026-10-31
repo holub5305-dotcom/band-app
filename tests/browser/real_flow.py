@@ -119,7 +119,7 @@ async def main():
             await B.click('#vcDiag summary'); await B.wait_for_timeout(2500)
             txt = await B.inner_text('#vcDiagBody'); print(txt)
             uids = await B.evaluate("(async()=>{const f=await import('./friends.js');const fb=await (f.createAccount?f.createAccount():f.connect());return [fb.uid, JSON.parse(localStorage.getItem('bandapp-friends-rooms'))[0].id]})()")
-            ok('  ukazuje naslouchání, chybu, verzi a příchozí hovory', all(k in txt for k in ['Naslouchání', 'Poslední chyba', 'Verze', 'Příchozí']) and re.search(r'BAND APP 1\.2\.[1-9]', txt), txt.replace('\n', ' / '))
+            ok('  ukazuje naslouchání, chybu, verzi a příchozí hovory', all(k in txt for k in ['Naslouchání', 'Poslední chyba', 'Verze', 'Příchozí']) and re.search(r'BAND APP 1\.(2\.[1-9]|3\.\d)', txt), txt.replace('\n', ' / '))
             ok('  žádné uid, ID skupiny ani přezdívky', not any(x and x in txt for x in uids + ['Laurinka', 'Táta', 'Kamarádky']))
             await B.locator('#videochat').screenshot(path=SHOTS + '/diag-tata.png')
         # ---- 3) druhá skupina: Kamarádky nejsou poslední; nový člen C ----
