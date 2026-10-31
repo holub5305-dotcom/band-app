@@ -134,8 +134,8 @@ async def main():
         await A.evaluate(NOICE); await B.evaluate(NOICE)
         await A.click(f'#vcPeopleList li[data-uid="{U["B"]}"] [data-act=video]')
         await wait(B, "document.getElementById('vcIncoming')"); await B.click('#vcAccept')
-        MSG = 'Spojení se nepodařilo – zkuste Wi-Fi'
-        ok('bez možnosti spojení: po ~20 s hláška „Spojení se nepodařilo – zkuste Wi-Fi.“ (obě strany)', await wait(A, "(()=>{const b=document.querySelector('#vcCall .vc-banner');return b&&!b.hidden&&b.textContent.includes('%s')})()" % MSG, 35000) and await wait(B, "(()=>{const b=document.querySelector('#vcCall .vc-banner');return b&&!b.hidden&&b.textContent.includes('%s')})()" % MSG, 35000))
+        MSG = 'Spojení se nepodařilo navázat (ICE selhalo)'; MSG2 = 'Spojení se nepodařilo – zkuste Wi-Fi.'
+        ok('bez možnosti spojení: po ~20 s hláška „Spojení se nepodařilo navázat (ICE selhalo) …“ (obě strany)', await wait(A, "(()=>{const b=document.querySelector('#vcCall .vc-banner');return b&&!b.hidden&&b.textContent.includes('%s')})()" % MSG, 35000) and await wait(B, "(()=>{const b=document.querySelector('#vcCall .vc-banner');return b&&!b.hidden&&b.textContent.includes('%s')})()" % MSG, 35000))
         await A.screenshot(path=SHOTS+'/noconn-A.png')
         ok('bez možnosti spojení: 1:1 hovor po ~50 s skončí se stejnou hláškou, kamera uvolněná', await wait(A, "!__vc.state()&&document.getElementById('videochatApp').innerText.includes('%s')" % MSG, 45000) and await wait(B, "!__vc.state()", 20000))
         await A.reload(); await B.reload(); await A.wait_for_timeout(1500)
@@ -146,10 +146,10 @@ async def main():
         await A.evaluate(NOOFFER); await B.evaluate(NOOFFER)
         await A.click(f'#vcPeopleList li[data-uid="{U["B"]}"] [data-act=video]')
         await wait(B, "document.getElementById('vcIncoming')"); await B.click('#vcAccept')
-        ok('nabídka nedorazí: po ~20 s hláška u OBOU stran', await wait(A, "(()=>{const b=document.querySelector('#vcCall .vc-banner');return b&&!b.hidden&&b.textContent.includes('%s')})()" % MSG, 35000) and await wait(B, "(()=>{const b=document.querySelector('#vcCall .vc-banner');return b&&!b.hidden&&b.textContent.includes('%s')})()" % MSG, 35000))
+        ok('nabídka nedorazí: po ~20 s hláška „Spojení se nepodařilo – zkuste Wi-Fi.“ u OBOU stran (ne ICE – nabídka nedorazila)', await wait(A, "(()=>{const b=document.querySelector('#vcCall .vc-banner');return b&&!b.hidden&&b.textContent.includes('%s')})()" % MSG2, 35000) and await wait(B, "(()=>{const b=document.querySelector('#vcCall .vc-banner');return b&&!b.hidden&&b.textContent.includes('%s')})()" % MSG2, 35000))
         endA = await wait(A, "!__vc.state()", 50000); endB = await wait(B, "!__vc.state()", 20000)
         txt = await A.evaluate("document.getElementById('videochatApp').innerText") + await B.evaluate("document.getElementById('videochatApp').innerText")
-        ok('nabídka nedorazí: hovor po ~50 s skončí u obou (žádné nekonečné „Připojuji…“), s hláškou', endA and endB and MSG in txt, txt[-200:])
+        ok('nabídka nedorazí: hovor po ~50 s skončí u obou (žádné nekonečné „Připojuji…“), s hláškou', endA and endB and MSG2 in txt and MSG not in txt, txt[-200:])
         await A.reload(); await B.reload(); await A.wait_for_timeout(1500)
         await wait(A, "document.querySelectorAll('#vcPeopleList li').length===2"); await wait(B, "document.querySelectorAll('#vcPeopleList li').length===2")
         # ---------- 8) neschválená ----------

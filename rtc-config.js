@@ -4,7 +4,7 @@
  *        obraz ani zvuk přes něj NEJDE. Nic se neukládá.
  * TURN = přenosový server pro sítě, kde přímé spojení nejde (část mobilních operátorů, firemní/školní Wi-Fi).
  *        VÝCHOZÍ STAV: ŽÁDNÝ TURN. Aplikace funguje jen se STUN; když se spojení nenaváže,
- *        ukáže „Spojení se nepodařilo – zkuste Wi-Fi.“
+ * *        ukáže „Spojení se nepodařilo navázat (ICE selhalo) – pravděpodobně mobilní síť bez TURN serveru…“ (1.2.7).
  *        Přes TURN jde obraz a zvuk dál šifrovaně (DTLS-SRTP) – provozovatel TURN ho nevidí ani neslyší.
  *
  * Volitelné zapnutí TURN (jen po schválení, viz _tools/turn-worker/README.md):
