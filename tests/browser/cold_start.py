@@ -40,7 +40,8 @@ async def create_group(pg, nick, name):
     await pg.wait_for_timeout(1500)
     for _ in range(5):
         if await pg.locator('#frCreate').count(): break
-        if await pg.locator('#frNewRoom').count(): await pg.click('#frNewRoom')
+        if await pg.locator('#frNewAccount').count(): await pg.click('#frNewAccount')   # 1.2.3: účet jen výslovně
+        elif await pg.locator('#frNewRoom').count(): await pg.click('#frNewRoom')
         else:
             btn = pg.locator('#friendsApp button', has_text='Kamarádky')
             if await btn.count(): await btn.first.click()
@@ -57,6 +58,8 @@ async def invite(pg):
     return await pg.input_value('#frInviteLink')
 async def join(pg, link, nick):
     await pg.goto(link)
+    if not await wait(pg, "document.getElementById('jAccept')||document.getElementById('frNewAccount')"): return False
+    if await pg.locator('#frNewAccount').count(): await pg.click('#frNewAccount')   # 1.2.3: nový účet jen výslovně
     if not await wait(pg, "document.getElementById('jAccept')"): return False
     await pg.fill('#jNick', nick); await pg.click('#jAccept')
     return await wait(pg, "document.querySelector('[data-state=pending]')")
@@ -119,18 +122,18 @@ async def main():
         ok('A: Diagnostika – Přihlášení ano · anonymní', row(txt, 'Přihlášení').startswith('ano'), row(txt, 'Přihlášení'))
         ok('A: Diagnostika – moje skupiny na serveru 1 · schválené 1', row(txt, 'Moje skupiny na serveru').startswith('1 · schválené: 1'), row(txt, 'Moje skupiny na serveru'))
         ok('A: Diagnostika – naslouchání AKTIVNÍ', act and row(txt, 'Naslouchání příchozím hovorům').startswith('AKTIVNÍ'), row(txt, 'Naslouchání příchozím hovorům'))
-        tcode = row(txt, 'Kód zařízení'); ok('A: Kód zařízení = 6 znaků (ne uid)', re.fullmatch(r'[0-9A-F]{6}', tcode or '') and tcode not in uid, tcode)
+        tcode = row(txt, 'Kód účtu'); ok('A: Kód účtu = 6 znaků (ne uid)', re.fullmatch(r'[0-9A-F]{6}', tcode or '') and tcode not in uid, tcode)
         ok('A: Diagnostika bez uid a jmen', uid not in txt and 'Táta' not in txt and 'Laurinka' not in txt)
         await T.locator('#videochat').screenshot(path=SHOTS + '/cold-diag-tata.png')
         ls = await T.evaluate("JSON.parse(localStorage.getItem('bandapp-friends-rooms')||'[]').map(r=>r.role)")
         ok('A: skupina se do zařízení doplnila ze serveru (vlastní členství, jen přidání)', ls == ['approved'], ls)
         await T.evaluate("location.hash='#skola'"); await T.wait_for_timeout(500)
         await ring(A, T, 'Táta', 'A (Táta v sekci Škola)')
-        lc = await codes(A, 'Táta'); ok('A: Laurinka (zakladatelka) vidí u Táty stejný Kód zařízení', any(tcode in x[1] for x in lc), (lc, tcode))
+        lc = await codes(A, 'Táta'); ok('A: Laurinka (zakladatelka) vidí u Táty stejný Kód účtu', any(tcode in x[1] for x in lc), (lc, tcode))
         # ---- D) stejný účet, ztracený místní seznam, NOVÁ pozvánka (v 1.2.1: „nedostatečná oprávnění“) ----
         await T.evaluate("localStorage.removeItem('bandapp-friends-rooms')")
         link0 = await invite(A); tok0 = link0.split('#t=')[1]
-        old = await T.evaluate('''(async(t)=>{const f=await import('./friends.js');const fb=await f.connect();const {F,db,uid}=fb;
+        old = await T.evaluate('''(async(t)=>{const f=await import('./friends.js');const fb=await (f.createAccount?f.createAccount():f.connect());const {F,db,uid}=fb;
           const inv=(await F.getDoc(F.doc(db,'invites',t))).data();
           try{await F.runTransaction(db,async tx=>{const s=await tx.get(F.doc(db,'invites',t));
             tx.set(F.doc(db,'rooms',inv.roomId,'members',uid),{uid,nick:'Táta',status:'pending',joinedAt:F.serverTimestamp(),invite:t});
@@ -162,7 +165,9 @@ async def main():
         await Q.screenshot(path=SHOTS + '/mismatch-strejda.png', full_page=False)
         link = await invite(A)
         await Q.fill('#vcInviteLink', 'Pozvánka do BAND APP: ' + link); await Q.click('#vcInviteGo')
-        ok('B: vložená pozvánka se otevře přímo v aplikaci (join.html, stejná adresa)', await wait(Q, "location.pathname.endsWith('/join.html')&&!!document.getElementById('jAccept')"))
+        ok('B: vložená pozvánka se otevře přímo v aplikaci (join.html, stejná adresa)', await wait(Q, "location.pathname.endsWith('/join.html')&&!!document.querySelector('[data-state=invite-no-account]')"))
+        ok('B: pozvánka bez účtu nic nezaloží sama – nabídne obnovu nebo výslovné založení', await Q.evaluate(UIDJS) is None and await Q.locator('#frNewAccount').count() == 1)
+        await Q.click('#frNewAccount'); await wait(Q, "document.getElementById('jAccept')")
         await Q.fill('#jNick', 'Strejda'); await Q.click('#jAccept')
         ok('B: žádost odeslána (čeká na schválení)', await wait(Q, "document.querySelector('[data-state=pending]')"))
         await wait(Q, "!(document.getElementById('jDevCode')||{textContent:'…'}).textContent.includes('…')")
@@ -183,7 +188,9 @@ async def main():
         # ---- C) přihlášený jiný (prázdný) účet ----
         cz, Z = await newp(b, 'Jiný účet')
         await Z.goto(BASE + '#friends'); await Z.wait_for_timeout(1500)
-        await Z.locator('#friendsApp button', has_text='Kamarádky').first.click(); await wait(Z, "document.getElementById('frCreate')")
+        await Z.locator('#friendsApp button', has_text='Kamarádky').first.click(); await wait(Z, "document.getElementById('frNewAccount')")
+        ok('C: Kamarádky bez účtu → obrazovka „není přihlášený“, nic se nezaložilo', await Z.evaluate(UIDJS) is None)
+        await Z.click('#frNewAccount'); await wait(Z, "document.getElementById('frCreate')")
         await Z.evaluate("location.hash='#videochat'")
         m = await wait(Z, "document.querySelector('#vcNoRooms[data-state=not-member]')", 20000)
         ok('C: přihlášený účet bez skupiny → „není přihlášený jako schválený člen“', m)

@@ -11,7 +11,7 @@
  * ✅ VYPLNĚNO (1p-final, 18. 10. 2026): webová konfigurace produkčního projektu band-app-7c9ca
  *    (doplněno nástrojem tools/fill-config.sh; shoda s webConfig projektu ověřena jen čtením).
  *    Kamarádky se připojí k Firebase teprve, když je uživatelka otevře. Zbytek BAND APP funguje jako dřív.
- *    Obnovovací kód zůstává VYPNUTÝ (RECOVERY_DOMAIN_VERIFIED = false níže).
+ *    Obnovovací kód: od 1.2.3 ZAPNUTÝ (RECOVERY_DOMAIN_VERIFIED níže).
  */
 export const FIREBASE_CONFIGURED = true;
 
@@ -50,4 +50,7 @@ export const APP_CHECK = {
  * RECOVERY_EMAIL_DOMAIN: "obnova.band-app.invalid" (.invalid je celosvětově vyhrazená, nikomu nepatří).
  * Doménu měň JEN PŘED vytvořením prvního skutečného kódu – po změně by dřív vytvořené kódy přestaly fungovat. */
 export const RECOVERY_EMAIL_DOMAIN = "obnova.band-app.invalid";
-export const RECOVERY_DOMAIN_VERIFIED = false;
+/* 1.2.3 (31. 10. 2026): ZAPNUTO. Ověřeno jen veřejnými čteními bez založení účtu: poskytovatel Email/Password je
+ * v band-app-7c9ca zapnutý, zásady hesla min. 6 znaků (kód má 20), povolené domény obsahují holub5305-dotcom.github.io.
+ * Kód připojí přihlášení k STÁVAJÍCÍMU účtu (linkWithCredential) → uid i „Kód účtu“ zůstávají stejné. */
+export const RECOVERY_DOMAIN_VERIFIED = true;

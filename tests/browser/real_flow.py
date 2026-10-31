@@ -40,7 +40,8 @@ async def create_group(pg, nick, name):
     await pg.wait_for_timeout(1500)
     for _ in range(5):
         if await pg.locator('#frCreate').count(): break
-        if await pg.locator('#frNewRoom').count(): await pg.click('#frNewRoom')
+        if await pg.locator('#frNewAccount').count(): await pg.click('#frNewAccount')   # 1.2.3: účet jen výslovně
+        elif await pg.locator('#frNewRoom').count(): await pg.click('#frNewRoom')
         else:
             btn = pg.locator('#friendsApp button', has_text='Kamarádky')
             if await btn.count(): await btn.first.click()
@@ -57,6 +58,8 @@ async def invite(pg):
     return await pg.input_value('#frInviteLink')
 async def join(pg, link, nick):
     await pg.goto(link)
+    if not await wait(pg, "document.getElementById('jAccept')||document.getElementById('frNewAccount')"): return False
+    if await pg.locator('#frNewAccount').count(): await pg.click('#frNewAccount')   # 1.2.3: nový účet jen výslovně
     if not await wait(pg, "document.getElementById('jAccept')"): return False
     await pg.fill('#jNick', nick); await pg.click('#jAccept')
     return await wait(pg, "document.querySelector('[data-state=pending]')")
@@ -115,7 +118,7 @@ async def main():
         if has:
             await B.click('#vcDiag summary'); await B.wait_for_timeout(2500)
             txt = await B.inner_text('#vcDiagBody'); print(txt)
-            uids = await B.evaluate("(async()=>{const f=await import('./friends.js');const fb=await f.connect();return [fb.uid, JSON.parse(localStorage.getItem('bandapp-friends-rooms'))[0].id]})()")
+            uids = await B.evaluate("(async()=>{const f=await import('./friends.js');const fb=await (f.createAccount?f.createAccount():f.connect());return [fb.uid, JSON.parse(localStorage.getItem('bandapp-friends-rooms'))[0].id]})()")
             ok('  ukazuje naslouchání, chybu, verzi a příchozí hovory', all(k in txt for k in ['Naslouchání', 'Poslední chyba', 'Verze', 'Příchozí']) and re.search(r'BAND APP 1\.2\.[1-9]', txt), txt.replace('\n', ' / '))
             ok('  žádné uid, ID skupiny ani přezdívky', not any(x and x in txt for x in uids + ['Laurinka', 'Táta', 'Kamarádky']))
             await B.locator('#videochat').screenshot(path=SHOTS + '/diag-tata.png')
