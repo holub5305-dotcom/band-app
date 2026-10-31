@@ -7,14 +7,14 @@
  * jen schválená, nezablokovaná členka téže skupiny a jen účastnice daného hovoru.
  * Omezení: hovor zazvoní jen v OTEVŘENÉ BAND APP (i na pozadí, pokud ji telefon nechá běžet).
  * Úplně zavřená aplikace (hlavně iPhone) hovor nedostane – na to by byl potřeba push server. */
-import { connect, local, isConfigured, isEmulator, notifyEnabled, notifySupported, lockedReason, firebaseBase, deviceCode, validToken } from './friends.js';
+import { connect, local, knownAccountCode, isConfigured, isEmulator, notifyEnabled, notifySupported, lockedReason, firebaseBase, deviceCode, validToken } from './friends.js';
 import { ICE_SERVERS, STATIC_TURN_SERVERS, TURN_CREDENTIALS_URL, MAX_PARTICIPANTS } from './rtc-config.js';
 
 const RING_MS = 45e3, RING_WINDOW_MS = 60e3, CALL_TTL_MS = 3 * 3600e3, HEARTBEAT_MS = 60e3, STALE_MS = 150e3, LOST_MS = 60e3,
   NOCONN_WARN_MS = 20e3, NOCONN_END_MS = 50e3;
 const NOCONN_MSG = 'Spojení se nepodařilo – zkuste Wi-Fi.';   // síť nejspíš blokuje přímé spojení (bez TURN)
 const NOTIFY_TAG = 'bandapp-hovor';
-export const APP_VERSION = '1.2.2';
+export const APP_VERSION = '1.2.3';
 const RETRY_MS = 15e3, START_CHECK_MS = 15e3;
 const $ = id => document.getElementById(id);
 const rnd = () => { const b = new Uint8Array(9); crypto.getRandomValues(b); return Array.from(b, x => x.toString(16).padStart(2, '0')).join(''); };
@@ -193,6 +193,7 @@ export async function initVideochat() {
   setInterval(ensureStarted, START_CHECK_MS);
   addEventListener('storage', e => { if (e.key && /friends-rooms$/.test(e.key)) ensureStarted(); });
   addEventListener('hashchange', ensureStarted);
+  addEventListener('bandapp-account', ensureStarted);   // 1.2.3: účet výslovně založen / obnoven
   addEventListener('focus', ensureStarted);
   document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible') ensureStarted(); onVisibility(); });
   addEventListener('pagehide', () => { const s = V.session; if (s) { try { writePeer(s, 'left'); } catch (e) { } } });
@@ -221,6 +222,9 @@ async function ensureStarted() {
     const u = V.base.auth.currentUser;
     V.code = u ? await deviceCode(u.uid) : '';
     if (!u && !local.rooms().length) { render(); return; }
+    // 1.2.3: skupiny v zařízení, ale přihlášení chybí → žádný nový účet (connect() ho už nikdy nezaloží), jen vysvětlit.
+    if (!u) { V.lost = await knownAccountCode(); noteErr('přihlášení', { code: 'bandapp/no-account' }); render(); return; }
+    V.lost = null;
     try { V.fb = await connect(); } catch (e) { noteErr('připojení', e); V.err = 'Videochat se teď nepřipojil (zkontroluj internet).'; render(); return; }
     V.code = await deviceCode(V.fb.uid);
     V.err = ''; V.started = true; syncRooms();
@@ -783,16 +787,17 @@ function notMember(kind) {
   const out = [];
   if (kind === 'pending') {
     out.push(h('div', { class: 'note', id: 'vcNoRooms', 'data-state': 'pending', text: '⏳ Tento telefon čeká na schválení ve skupině. Až tě zakladatelka v Kamarádkách schválí, hovory se tady zapnou samy (bez restartu).' }));
-    if (V.code) out.push(h('p', { class: 'note', id: 'vcMyCode', text: 'Kód zařízení: ' + V.code + ' – zakladatelka ho uvidí u tvé žádosti.' }));
+    if (V.code) out.push(h('p', { class: 'note', id: 'vcMyCode', text: 'Kód účtu: ' + V.code + ' – zakladatelka ho uvidí u tvé žádosti.' }));
     return out;
   }
   out.push(h('div', { class: 'vc-err', role: 'alert', id: 'vcNoRooms', 'data-state': kind === 'signed-out' ? 'not-signed-in' : 'not-member' },
     h('strong', { text: 'Tento telefon není přihlášený jako schválený člen skupiny.' }),
     h('p', { text: kind === 'signed-out'
-      ? 'Tahle nainstalovaná BAND APP zatím není přihlášená do Kamarádek. Pokud ses do skupiny přidal(a) přes odkaz pozvánky v prohlížeči nebo v jiné aplikaci, je to jiné přihlášení než tady – proto ti sem hovory nechodí.'
+      ? 'Tahle BAND APP zatím není přihlášená k žádnému účtu. Pokud ses do skupiny přidal(a) přes odkaz pozvánky v prohlížeči nebo v jiné aplikaci, je to jiné přihlášení než tady – proto ti sem hovory nechodí. Nejlepší je účet tam zabezpečit (Kamarádky → Můj účet → 🔐 Zabezpečit účet) a tady ho obnovit obnovovacím kódem – kód účtu zůstane stejný.'
       : 'Tahle BAND APP je přihlášená, ale v žádné skupině tu nejsi. Pokud ses přidal(a) přes odkaz pozvánky v prohlížeči nebo v jiné aplikaci, je to jiné přihlášení než tady.' }),
-    h('p', { text: 'Řešení: požádej zakladatelku skupiny o NOVOU pozvánku, zkopíruj odkaz a vlož ho sem. Pozvánka se otevře přímo v této BAND APP; potom tě zakladatelka znovu schválí. Nic se nesmaže.' })));
-  if (V.code) out.push(h('p', { class: 'note', id: 'vcMyCode', text: 'Kód zařízení: ' + V.code }));
+    h('p', { text: 'Jinak: požádej zakladatelku skupiny o NOVOU pozvánku a vlož odkaz sem. Pozvánka se otevře přímo v této BAND APP; zakladatelka pak osobně převede tvoje členství na tento účet (podle kódu účtu). Nic se nesmaže.' })));
+  if (V.code) out.push(h('p', { class: 'note', id: 'vcMyCode', text: 'Kód účtu: ' + V.code }));
+  if (V.lost) out.push(h('div', { class: 'vc-err', id: 'vcLostAccount', 'data-state': 'lost-session', text: '⚠️ Tady byl dřív přihlášený účet s kódem ' + V.lost + ', ale přihlášení chybí. Nezakládej nový účet: obnov ho v Kamarádkách (♻️ Mám obnovovací kód), nebo používej telefon/prohlížeč, kde jsi přihlášená.' }));
   const inp = h('input', { type: 'url', id: 'vcInviteLink', placeholder: 'Vlož odkaz pozvánky (…join.html#t=…)', autocomplete: 'off', 'aria-label': 'Odkaz pozvánky' });
   const err = h('div', { class: 'vc-err', role: 'alert', hidden: true });
   const go = h('button', { type: 'button', class: 'vc-callbtn primary', id: 'vcInviteGo', onclick: () => {
@@ -810,7 +815,7 @@ function render() {
   if (V.err) kids.push(h('div', { class: 'vc-err', role: 'alert', id: 'vcErr', text: V.err }));
   const rooms = approvedRooms();
   if (!V.fb) {
-    if ((V.noAuth || (V.base && !V.base.auth.currentUser)) && !local.rooms().length && !lockedReason()) { kids.push(...notMember('signed-out')); put(root, kids); return; }
+    if ((V.noAuth || (V.base && !V.base.auth.currentUser)) && !lockedReason()) { kids.push(...notMember('signed-out')); put(root, kids); return; }
     kids.push(h('p', { class: 'note', 'data-state': 'no-rooms', id: 'vcNoRooms', text: rooms.length ? 'Videochat se připojuje…' : (lockedReason() ? 'Tento telefon je v Kamarádkách odhlášený. Přihlas se tam znovu obnovovacím kódem – potom se zapnou i hovory.' : 'Videochat je jen pro schválené členky skupiny. Nejdřív se přidej do skupiny v sekci Kamarádky (a počkej na schválení).') }));
     put(root, kids); return;
   }
@@ -886,7 +891,7 @@ async function fillDiag() {
     ['Internet', navigator.onLine === false ? 'offline' : 'online'],
     ['Firebase', (V.fb || V.base) ? 'připojeno' : V.noAuth ? 'nenačteno – telefon není přihlášený (není co obnovit)' : (V.starting ? 'připojuje se' : 'nepřipojeno')],
     ['Přihlášení', authText()],
-    ['Kód zařízení', V.code || '–'],
+    ['Kód účtu', V.code || '–'],
     ['Moje skupiny na serveru', V.srvState === 'ok' ? String(V.srv.size) + ' · schválené: ' + [...V.srv.values()].filter(x => OK_ROLES.includes(x)).length + ' · čeká: ' + [...V.srv.values()].filter(x => x === 'pending').length : V.srvState],
     ['Skupiny v zařízení', String(rooms.length) + ' · schválené podle serveru: ' + appr + (pend ? ' · čeká na schválení: ' + pend : '')],
     ['Naslouchání příchozím hovorům', (on ? 'AKTIVNÍ' : 'neaktivní') + ' (' + on + ' z ' + appr + ')' + (Object.keys(states).length ? ' · ' + Object.entries(states).map(([k, v]) => k + ': ' + v).join(', ') : '')],

@@ -1,6 +1,7 @@
 rules_version = '2';
 // BAND APP – Kamarádky (verze 1.1, PRODUKČNÍ projekt band-app-7c9ca): bezpečnostní pravidla Firestore.
 // 1.2.0: přibyl JEN blok /rooms/{roomId}/calls (videochat) + 3 pomocné funkce.
+// 1.2.3: přibyly JEN dvě větve u /members update (převod členství zakladatelkou, starý záznam se jen označí 'replaced').
 // Stávající pravidla (pozvánky, členky, zprávy, záloha) jsou beze změny.
 // Proti 1p (= otestovaná 1h) přibyla JEN větev B u /rooms/{roomId}/members/{uid} update: změna vlastní přezdívky.
 // Bez souhlasu (pole „consent“ nové záznamy mít NESMÍ). Dotaz na VLASTNÍ členství přes všechny skupiny
@@ -215,6 +216,38 @@ service cloud.firestore {
             && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['status'])
             && request.resource.data.status == 'approved'
             && roomAfter(roomId).ownerUid != uid
+          ) || (
+          // 1.2.3 PŘEVOD ČLENSTVÍ na nový účet (ztracené přihlášení) – jen zakladatelka, oba záznamy v JEDNÉ dávce.
+          // a) Nový účet (čekající nebo schválený, ne zakladatelka, ne zablokovaný) se stává schváleným se STEJNOU
+          //    přezdívkou jako starý účet a s odkazem „replaces“ na starý účet.
+            uid != me() && uid != room(roomId).ownerUid
+            && resource.data.status in ['pending', 'approved']
+            && !(uid in room(roomId).blocked)
+            && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['status', 'approvedAt', 'nick', 'replaces'])
+            && request.resource.data.status == 'approved'
+            && request.resource.data.approvedAt == request.time
+            && request.resource.data.replaces is string
+            && request.resource.data.replaces != uid
+            && request.resource.data.replaces != me()
+            && request.resource.data.replaces != room(roomId).ownerUid
+            && exists(memberPath(roomId, request.resource.data.replaces))
+            && get(memberPath(roomId, request.resource.data.replaces)).data.status == 'approved'
+            && request.resource.data.nick == get(memberPath(roomId, request.resource.data.replaces)).data.nick
+            && getAfter(memberPath(roomId, request.resource.data.replaces)).data.status == 'replaced'
+            && getAfter(memberPath(roomId, request.resource.data.replaces)).data.replacedBy == uid
+          ) || (
+          // b) Starý (schválený) účet se NEMAŽE – jen se označí 'replaced' + replacedBy; tím ztratí přístup
+          //    (isApproved bere jen 'owner'/'approved'). Musí to být týž převod (nový záznam ukazuje zpět).
+            uid != me() && uid != room(roomId).ownerUid
+            && resource.data.status == 'approved'
+            && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['status', 'replacedBy', 'replacedAt'])
+            && request.resource.data.status == 'replaced'
+            && request.resource.data.replacedAt == request.time
+            && request.resource.data.replacedBy is string
+            && request.resource.data.replacedBy != uid
+            && existsAfter(memberPath(roomId, request.resource.data.replacedBy))
+            && getAfter(memberPath(roomId, request.resource.data.replacedBy)).data.status == 'approved'
+            && getAfter(memberPath(roomId, request.resource.data.replacedBy)).data.replaces == uid
           )
         )) || (
           // B) 1.1 – změna VLASTNÍ přezdívky: jen svůj záznam, jen pole „nick“ (status, invite, uid, joinedAt…

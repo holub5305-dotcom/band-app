@@ -36,7 +36,7 @@ async def main():
             pg.on('pageerror', lambda e, n=name: ERRS[n].append(str(e)))
             pg.on('dialog', lambda d: asyncio.ensure_future(d.accept()))
             await pg.goto(BASE); await pg.wait_for_timeout(800)
-            uid = await pg.evaluate("import('./friends.js').then(m=>m.connect()).then(f=>f.uid)")
+            uid = await pg.evaluate("import('./friends.js').then(async m=>{if(m.createAccount) await m.createAccount(); return m.connect()}).then(f=>f.uid)")
             P[name] = {'c': c, 'pg': pg, 'uid': uid}
         A, B, C, D = (P[k]['pg'] for k in 'ABCD'); U = {k: P[k]['uid'] for k in 'ABCD'}
         room = 'roomTest1'
