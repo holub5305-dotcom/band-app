@@ -203,6 +203,16 @@ export async function checkSession() {
   try { await u.getIdToken(true); return true; }
   catch (e) { return !/user-token-expired|user-disabled|user-not-found|invalid-user-token|token-expired/.test((e && e.code) || ''); }
 }
+/* 1.2.2: Firebase BEZ přihlašování – jen načte SDK a obnoví uložené přihlášení (authStateReady).
+ * Nový (anonymní) účet nikdy nezakládá; to dělá jen connect() po výslovné akci (Kamarádky, pozvánka). */
+export async function firebaseBase() { return base(); }
+/* Krátký „Kód zařízení“: prvních 6 znaků SHA-256(uid). Z kódu nejde uid zjistit; slouží jen k porovnání
+ * „je tohle stejné přihlášení?“ mezi telefonem a seznamem členek u zakladatelky. */
+export async function deviceCode(uid) {
+  if (!uid) return '';
+  try { const d = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(String(uid)));
+    return [...new Uint8Array(d)].slice(0, 3).map(b => b.toString(16).padStart(2, '0')).join('').toUpperCase(); } catch (e) { return ''; }
+}
 export async function connect() {
   const fb = await base();
   if (!fb.auth.currentUser) {
@@ -213,7 +223,8 @@ export async function connect() {
     syncedUid = fb.uid;
     if (hasCode(fb.auth.currentUser)) markRecoverable(fb);
     await syncState(fb);                                       // záloha kontaktů (nevadí, když selže – zkusí se příště)
-    if (hasCode(fb.auth.currentUser) && !local.rooms().length) await discoverRooms(fb);
+    // 1.2.2: vlastní skupiny ze serveru i pro anonymní účet, když je místní seznam prázdný (jen přidá, nic nemaže).
+    if (!local.rooms().length) await discoverRooms(fb);
   }
   fbReady = fb;
   return fb;
@@ -374,6 +385,10 @@ export async function getInvite(token) {
  * který pozvaná osoba smí udělat (pravidla). Přijetím vzniká jen čekající členka – vstup schvaluje zakladatelka. */
 export async function acceptInvite(token, roomId, nick) {
   const { db, F, uid } = await connect(), iref = F.doc(db, 'invites', token);
+  // 1.2.2: kdo už ve skupině JE (stejný účet, např. po ztrátě místního seznamu), nic nezapisuje – pravidla by
+  // přepis vlastního záznamu odmítla („nedostatečná oprávnění“) a schválení by se stejně nesmělo ztratit.
+  const mine = await F.getDocFromServer(F.doc(db, 'rooms', roomId, 'members', uid)).catch(() => null);
+  if (mine && mine.exists()) throw Object.assign(err('bandapp/already-member'), { status: String(mine.data().status || '') });
   await F.runTransaction(db, async tx => {
     const s = await tx.get(iref);
     if (!s.exists()) throw err('bandapp/invite-missing');
@@ -429,6 +444,10 @@ export async function sendMessage(roomId, nick, text) {
  * v soukromé záloze a v zařízení. Staré zprávy se nepřepisují; chat ukazuje u každé zprávy AKTUÁLNÍ přezdívku
  * autorky podle seznamu členek. Proti záměně: přezdívku, kterou už má jiná členka v některé z mých skupin
  * (bez ohledu na velikost písmen a mezery), aplikace nedovolí. */
+function codeLine(uid) {   // 1.2.2: jen pro zakladatelku – porovnání s „Kód zařízení“ v Diagnostice hovorů u členky
+  const el = h('div', { class: 'fstat', 'data-devcode': '1', text: 'Kód zařízení: …' });
+  deviceCode(uid).then(c => { el.textContent = 'Kód zařízení: ' + (c || '–'); }); return el;
+}
 export const nickKey = s => cleanNick(s).toLocaleLowerCase('cs');
 async function myMemberships(fb) {
   const { F, db, uid } = fb, out = new Map();
@@ -586,6 +605,7 @@ function errText(e) {
   if (c === 'bandapp/no-code') return 'Účet zatím nemá obnovovací kód.';
   if (c === 'bandapp/signed-out') return CHANGED_TEXT;
   if (c === 'bandapp/nick-taken') return 'Tuto přezdívku už má jiná členka ve skupině „' + ((e && e.room) || 'Skupina') + '“. Vyber si jinou, ať si vás nikdo nesplete. Nic se nezměnilo.';
+  if (c === 'bandapp/already-member') return 'V této skupině už členkou jsi – pozvánku nepotřebuješ.';
   if (c === 'bandapp/nick-empty') return 'Napiš novou přezdívku (1 až 24 znaků).';
   if (c === 'bandapp/offline') return 'Přezdívku jde změnit jen s internetem. Nic se nezměnilo.';
   if (c.startsWith('bandapp/')) return 'Něco se nepovedlo. Nic se nezměnilo, zkus to znovu.';
@@ -608,6 +628,8 @@ function errText(e) {
   return 'Něco se nepovedlo. Zkus to znovu.';
 }
 export { errText };
+/* 1.2.2: poslední chyba pozvánky/přihlášení pro „Diagnostika hovorů“ – jen kód chyby, jen v této relaci (sessionStorage). */
+export function noteDiagErr(where, e) { try { sessionStorage.setItem('bandapp-diag-err', JSON.stringify({ where, code: String((e && e.code) || (e && e.name) || 'neznámá').slice(0, 40), at: Date.now() })); } catch (x) { } }
 
 /* ---------- styl (černočervený, dotykové prvky min. 44 px) ---------- */
 function injectStyle() {
@@ -1156,7 +1178,8 @@ async function initIndex(root) {
           h('span', { class: 'ficon', 'aria-hidden': 'true', text: STATUS_ICON[m.status] || '•' }),
           h('div', { style: 'flex:1;min-width:0' }, h('div', { class: 'fname', text: (m.nick || 'Kamarádka') + (m.status === 'owner' ? ' 👑' : '') }),
             h('div', { class: 'fstat', text: STATUS_TEXT[m.status] || 'členka' }),
-            dup ? h('div', { class: 'dup', 'data-dup': '1', text: '⚠️ Stejnou přezdívku má i jiná členka – ověř si, kdo to je.' }) : null), star), act);
+            dup ? h('div', { class: 'dup', 'data-dup': '1', text: '⚠️ Stejnou přezdívku má i jiná členka – ověř si, kdo to je.' }) : null,
+            mgr ? codeLine(m.uid) : null), star), act);
       }));
       const bl = (S.room && S.room.blocked) || [];
       if (mgr && bl.length) { const names = local.blockedNames(); fill(blockedBox, h('h4', { text: 'Zablokované' }), h('ul', { class: 'fr-list' }, ...bl.map(u => h('li', {}, h('span', { text: (names[u] || 'neznámá') + ' ' }), btn('secondary', 'Odblokovat', async () => { try { await unblock(roomId, u); } catch (e) { showErr(err, e); } }))))); }
@@ -1227,7 +1250,17 @@ async function initJoin(root) {
   say('note', 'Ověřuji pozvánku…', 'loading');
   let fb, inv;
   try { fb = await connect(); inv = await getInvite(token); }
-  catch (e) { if (e && e.code === 'bandapp/signed-out') return signedOut(); return fill(root, h('div', { class: 'err', role: 'alert', 'data-state': 'error', text: 'Pozvánku se nepodařilo ověřit. ' + errText(e) }), btn('secondary', '↻ Zkusit znovu', () => location.reload())); }
+  catch (e) { noteDiagErr('pozvánka', e); if (e && e.code === 'bandapp/signed-out') return signedOut(); return fill(root, h('div', { class: 'err', role: 'alert', 'data-state': 'error', text: 'Pozvánku se nepodařilo ověřit. ' + errText(e) }), btn('secondary', '↻ Zkusit znovu', () => location.reload())); }
+  // 1.2.2: tento účet už ve skupině je (třeba schválený dřív) → žádná nová žádost, jen obnovit skupinu v zařízení.
+  const roomOf = inv ? inv.roomId : null;
+  if (roomOf) {
+    const mine = await fb.F.getDocFromServer(fb.F.doc(fb.db, 'rooms', roomOf, 'members', fb.uid)).catch(() => null);
+    if (mine && mine.exists()) {
+      dropToken(); const st = String(mine.data().status || 'member');
+      const r = Object.assign({}, local.rooms().find(x => x.id === roomOf) || { id: roomOf, name: '', from: inv.fromNick }, { role: st }); local.saveRoom(r);
+      return roomView(r, 'V této skupině už členkou jsi (stejný účet jako dřív) – pozvánku nepotřebuješ. Skupina je zase v BAND APP.');
+    }
+  }
   if (!inv) { dropToken(); return say('err', 'Pozvánka neexistuje – byla zrušena nebo už vypršela.', 'missing'); }
   if (inv.used) {
     if (inv.usedBy === fb.uid) { const r = local.rooms().find(x => x.id === inv.roomId) || { id: inv.roomId, name: '', role: 'member', from: inv.fromNick }; local.saveRoom(r); return roomView(r); }
@@ -1244,12 +1277,13 @@ async function initJoin(root) {
     if (!n) { err.hidden = false; err.textContent = 'Napiš svou přezdívku.'; return; }
     accept.disabled = true; err.hidden = true;
     try {
-      await acceptInvite(token, inv.roomId, n);
+      try { await acceptInvite(token, inv.roomId, n); }
+      catch (e) { if (!(e && e.code === 'bandapp/already-member')) throw e; dropToken(); const r = { id: inv.roomId, name: '', role: e.status || 'member', from: inv.fromNick }; local.saveRoom(r); return roomView(r, errText(e)); }
       local.setNick(n); const r = { id: inv.roomId, name: '', role: 'pending', from: inv.fromNick }; local.saveRoom(r);
       dropToken();
       roomView(r);
     } catch (e) {
-      err.hidden = false; err.textContent = 'Žádost se nepodařilo odeslat. ' + errText(e);
+      noteDiagErr('pozvánka', e); err.hidden = false; err.textContent = 'Žádost se nepodařilo odeslat. ' + errText(e);
       const final = ['bandapp/invite-used', 'bandapp/invite-missing'].includes(e && e.code);
       accept.disabled = final;
       if (final) dropToken();
@@ -1261,8 +1295,13 @@ async function initJoin(root) {
     err, h('div', { class: 'row' }, accept),
     ...privacyLines('Odesláním žádosti přijímáš pravidla skupiny.'));
 
-  function roomView(r) {
+  function joinCode(uid) {   // 1.2.2: stejný kód vidí zakladatelka u členky a člen v BAND APP → Diagnostika hovorů
+    const el = h('p', { class: 'note', id: 'jDevCode', text: 'Kód zařízení: …' });
+    deviceCode(uid).then(c => { el.textContent = 'Kód zařízení: ' + (c || '–') + (matchMedia('(display-mode: standalone)').matches ? ' (nainstalovaná BAND APP)' : ' (tento prohlížeč)'); }); return el;
+  }
+  function roomView(r, notice) {
     fill(root, h('p', { class: 'note', text: 'Načítám…' }));
+    const noticeEl = () => notice ? h('div', { class: 'note', id: 'jAlready', 'data-state': 'already-member', text: '✅ ' + notice }) : null;
     // 1.1: „cur“ = vždy POSLEDNÍ stav vlastního záznamu (dřív si chat pamatoval přezdívku z prvního načtení).
     let chatOff = null, roomName = '', cur = null, asP = null;
     const ned = nickEditor(() => (cur && cur.nick) || local.nick(), () => { });
@@ -1272,7 +1311,7 @@ async function initJoin(root) {
       if (r.role !== my.status) { r.role = my.status; local.saveRoom({ id: r.id, role: my.status }); }
       cur = my;
       if (my.status === 'pending') return fill(root, h('h2', { text: '⏳ Čekáš na schválení' }), h('p', { 'data-state': 'pending', text: 'Až tě ' + (r.from || 'zakladatelka skupiny') + ' schválí, otevře se tady chat. Stránku si ulož do záložek.' }),
-        h('p', { class: 'note', id: 'jMyNick', text: 'Tvoje přezdívka: ' + (my.nick || 'Kamarádka') }), h('div', { class: 'row' }, ned.button), ned.box);
+        h('p', { class: 'note', id: 'jMyNick', text: 'Tvoje přezdívka: ' + (my.nick || 'Kamarádka') }), noticeEl(), joinCode(fb.uid), h('div', { class: 'row' }, ned.button), ned.box);
       if (my.status === 'owner') {
         if (chatOff) { chatOff(); chatOff = null; }
         return fill(root, h('h2', { text: '👑 Jsi zakladatelka skupiny' }),
@@ -1282,7 +1321,7 @@ async function initJoin(root) {
       if (chatOff) { if (asP) asP.textContent = asText(); return; }
       const chat = h('div'), title = h('h2', { id: 'jRoomTitle', text: '💬 ' + (r.name || 'Skupina') });
       asP = h('p', { class: 'note', 'data-state': 'approved', id: 'jMyNick', text: asText() });
-      fill(root, title, asP, h('div', { class: 'row' }, ned.button), ned.box, chat,
+      fill(root, title, asP, noticeEl(), joinCode(fb.uid), h('div', { class: 'row' }, ned.button), ned.box, chat,
         h('div', { class: 'row' },
           btn('secondary', 'Opustit skupinu', async () => { if (!confirm('Opravdu chceš opustit skupinu?')) return; try { await leaveRoom(r.id); } catch (e) { } })));
       chatOff = mountChat(chat, r.id, () => (cur && cur.nick) || my.nick, fb.uid);

@@ -7,14 +7,14 @@
  * jen schválená, nezablokovaná členka téže skupiny a jen účastnice daného hovoru.
  * Omezení: hovor zazvoní jen v OTEVŘENÉ BAND APP (i na pozadí, pokud ji telefon nechá běžet).
  * Úplně zavřená aplikace (hlavně iPhone) hovor nedostane – na to by byl potřeba push server. */
-import { connect, local, isConfigured, isEmulator, notifyEnabled, notifySupported, lockedReason } from './friends.js';
+import { connect, local, isConfigured, isEmulator, notifyEnabled, notifySupported, lockedReason, firebaseBase, deviceCode, validToken } from './friends.js';
 import { ICE_SERVERS, STATIC_TURN_SERVERS, TURN_CREDENTIALS_URL, MAX_PARTICIPANTS } from './rtc-config.js';
 
 const RING_MS = 45e3, RING_WINDOW_MS = 60e3, CALL_TTL_MS = 3 * 3600e3, HEARTBEAT_MS = 60e3, STALE_MS = 150e3, LOST_MS = 60e3,
   NOCONN_WARN_MS = 20e3, NOCONN_END_MS = 50e3;
 const NOCONN_MSG = 'Spojení se nepodařilo – zkuste Wi-Fi.';   // síť nejspíš blokuje přímé spojení (bez TURN)
 const NOTIFY_TAG = 'bandapp-hovor';
-export const APP_VERSION = '1.2.1';
+export const APP_VERSION = '1.2.2';
 const RETRY_MS = 15e3, START_CHECK_MS = 15e3;
 const $ = id => document.getElementById(id);
 const rnd = () => { const b = new Uint8Array(9); crypto.getRandomValues(b); return Array.from(b, x => x.toString(16).padStart(2, '0')).join(''); };
@@ -101,13 +101,18 @@ function injectStyle() {
 
 /* ---------- stav ---------- */
 const V = { fb: null, uid: null, root: null, roomId: null, members: new Map(), memUnsub: null, callSubs: new Map(), calls: new Map(), handled: new Set(), session: null, incoming: null, err: '', iceCache: null,
-  my: new Map(), mySubs: new Map(), retry: new Map(), listen: new Map(), lastErr: null, lastSnap: 0, skew: 0, starting: false, started: false, diagEl: null };
+  my: new Map(), mySubs: new Map(), retry: new Map(), listen: new Map(), lastErr: null, lastSnap: 0, skew: 0, starting: false, started: false, diagEl: null,
+  base: null, authHooked: false, srv: new Map(), srvState: 'neznámé', srvUnsub: null, names: new Map(), code: '' };
 /* 1.2.1: o členství rozhoduje SERVER (vlastní záznam rooms/{id}/members/{uid}), ne místní kopie role v localStorage.
  * (Místní role se v 1.2.0 obnovovala jen při otevření skupiny v Kamarádkách – čerstvě schválená členka proto
  * příchozí hovory vůbec neposlouchala.) Dokud server neodpoví, použije se místní role jen pro zobrazení. */
 const OK_ROLES = ['owner', 'approved'];
 const serverOk = id => OK_ROLES.includes(V.my.get(id));
-const approvedRooms = () => local.rooms().filter(r => V.my.has(r.id) ? serverOk(r.id) : OK_ROLES.includes(r.role));
+/* 1.2.2: skupiny = místní seznam + VLASTNÍ členství na serveru (dotaz members.uid == moje uid, pravidla ho dovolují),
+ * takže videochat funguje i s prázdným/jiným místním seznamem. Do localStorage videochat nic nezapisuje. */
+const allRooms = () => { const m = new Map(local.rooms().map(r => [r.id, r]));
+  for (const [id, st] of V.srv) if (!m.has(id)) m.set(id, { id, name: V.names.get(id) || 'Skupina', role: st }); return [...m.values()]; };
+const approvedRooms = () => allRooms().filter(r => V.my.has(r.id) ? serverOk(r.id) : OK_ROLES.includes(V.srv.has(r.id) ? V.srv.get(r.id) : r.role));
 const nowS = () => Date.now() - V.skew;              // odhad času serveru (hodiny telefonu můžou jít napřed/pozadu)
 const errCode = e => String((e && e.code) || (e && e.name) || 'neznámá').replace(/^firestore\//, '').slice(0, 40);
 function noteErr(where, e) { V.lastErr = { where, code: errCode(e), at: Date.now() }; }
@@ -194,22 +199,80 @@ export async function initVideochat() {
   addEventListener('online', () => { ensureStarted(); const s = V.session; if (s) { banner(s, 'Internet je zpět – obnovuji spojení…', 4000); s.pcs.forEach((p, uid) => { if (!connected(p)) reconnect(s, uid); }); } });
   addEventListener('offline', () => { const s = V.session; if (s) banner(s, 'Bez internetu – hovor se obnoví, až se připojení vrátí.'); });
 }
-/* Připojí se k Firebase, až to dává smysl (je skupina v zařízení, není odhlášeno). Bez skupiny se nic nezakládá
- * (žádný nový anonymní účet jen kvůli videochatu). Volá se opakovaně – je levné a idempotentní. */
+/* 1.2.2: Firebase se načte vždy, když je nastavený (obnoví uložené přihlášení, žádný nový účet).
+ * – přihlášený telefon (jakýkoli účet z Kamarádek/pozvánky) → připojit a naslouchat podle členství na serveru;
+ * – nepřihlášený telefon se skupinou v zařízení → jako v 1.2.1 (connect, stejně jako otevření Kamarádek);
+ * – nepřihlášený bez skupin → nic nezakládá, jen srozumitelně vysvětlí, jak pozvánku otevřít tady.
+ * Volá se opakovaně – je levné a idempotentní. */
 async function ensureStarted() {
   if (V.fb) { syncRooms(); return; }
   if (V.starting) return;
   V.starting = true;
   try {
-    if (lockedReason() || !local.rooms().length || !(await isConfigured())) { render(); return; }
+    if (lockedReason() || !(await isConfigured())) { render(); return; }
+    // Telefon, který se nikdy nepřihlásil (žádné uložené přihlášení Firebase) a nemá skupinu: Firebase ani App Check
+    // se vůbec nenačítají (stejně jako v 1.1.3 bez otevření Kamarádek) – jen se zobrazí návod.
+    if (!V.base && !local.rooms().length && (await persistedAuth()) === false) { V.noAuth = true; render(); return; }
+    V.noAuth = false;
+    if (!V.base) {
+      try { V.base = await firebaseBase(); } catch (e) { noteErr('Firebase', e); V.err = 'Videochat se teď nepřipojil (zkontroluj internet).'; render(); return; }
+      if (!V.authHooked) { V.authHooked = true; try { V.base.A.onAuthStateChanged(V.base.auth, () => { setTimeout(ensureStarted, 0); }); } catch (e) { } }
+    }
+    const u = V.base.auth.currentUser;
+    V.code = u ? await deviceCode(u.uid) : '';
+    if (!u && !local.rooms().length) { render(); return; }
     try { V.fb = await connect(); } catch (e) { noteErr('připojení', e); V.err = 'Videochat se teď nepřipojil (zkontroluj internet).'; render(); return; }
+    V.code = await deviceCode(V.fb.uid);
     V.err = ''; V.started = true; syncRooms();
   } catch (e) { noteErr('start', e); render(); }
   finally { V.starting = false; }
 }
+/* Je v zařízení uložené přihlášení Firebase? (IndexedDB „firebaseLocalStorageDb“, klíč firebase:authUser:…)
+ * true/false; null = nejde zjistit (pak se Firebase načte normálně). Nic nezapisuje a nezakládá. */
+async function persistedAuth() {
+  try {
+    if (!indexedDB || !indexedDB.databases) return null;
+    const dbs = await indexedDB.databases();
+    if (!dbs.some(d => d.name === 'firebaseLocalStorageDb')) return false;
+    return await new Promise(res => {
+      const rq = indexedDB.open('firebaseLocalStorageDb');
+      rq.onerror = () => res(null);
+      rq.onsuccess = () => { const d = rq.result;
+        try { if (!d.objectStoreNames.contains('firebaseLocalStorage')) { d.close(); return res(false); }
+          const k = d.transaction('firebaseLocalStorage', 'readonly').objectStore('firebaseLocalStorage').getAllKeys();
+          k.onsuccess = () => { d.close(); res(k.result.some(x => String(x).startsWith('firebase:authUser:'))); };
+          k.onerror = () => { d.close(); res(null); };
+        } catch (e) { try { d.close(); } catch (x) { } res(null); } };
+    });
+  } catch (e) { return null; }
+}
+/* Vlastní členství na serveru (živě): nové schválení / nová skupina se projeví bez restartu. */
+function watchServerRooms() {
+  const uid = V.uid; if (V.srvUnsub || V.srvRetry || !uid) return;
+  V.srvState = 'načítá';
+  try {
+    V.srvUnsub = F().onSnapshot(F().query(F().collectionGroup(db(), 'members'), F().where('uid', '==', uid), F().limit(50)), { includeMetadataChanges: true }, snap => {
+      if (V.uid !== uid) return;
+      const m = new Map();
+      snap.docs.forEach(d => { const rr = d.ref.parent.parent; if (rr && rr.parent.id === 'rooms') m.set(rr.id, String(d.data().status || '')); });
+      if (snap.metadata && snap.metadata.fromCache && !m.size && V.srvState !== 'ok') return;   // čekáme na odpověď serveru
+      V.srv = m; V.srvState = 'ok'; V.lastSnap = Date.now();
+      for (const [id, st] of m) if (OK_ROLES.includes(st) && !V.names.has(id) && !local.rooms().some(r => r.id === id)) {
+        V.names.set(id, 'Skupina');
+        F().getDoc(F().doc(db(), 'rooms', id)).then(r => { if (r.exists() && r.data().name) { V.names.set(id, String(r.data().name).slice(0, 40)); render(); } }).catch(() => { });
+      }
+      syncRooms();
+    }, e => {
+      noteErr('moje skupiny', e); V.srvState = 'chyba (' + errCode(e) + ')';
+      if (V.srvUnsub) { try { V.srvUnsub(); } catch (x) { } } V.srvUnsub = null;
+      V.srvRetry = setTimeout(() => { V.srvRetry = null; if (V.uid === uid) watchServerRooms(); }, RETRY_MS); render();
+    });
+  } catch (e) { noteErr('moje skupiny', e); V.srvState = 'chyba (' + errCode(e) + ')'; V.srvUnsub = null; }
+}
 function stopAllRooms() {
   for (const id of [...new Set([...V.mySubs.keys(), ...V.callSubs.keys()])]) dropRoom(id);
   V.my.clear(); V.retry.forEach(t => clearTimeout(t)); V.retry.clear();
+  if (V.srvUnsub) { try { V.srvUnsub(); } catch (e) { } } V.srvUnsub = null; clearTimeout(V.srvRetry); V.srvRetry = null; V.srv = new Map(); V.srvState = 'neznámé';
 }
 function dropRoom(id) {
   const u = V.mySubs.get(id); if (u) { try { u(); } catch (e) { } V.mySubs.delete(id); }
@@ -218,9 +281,10 @@ function dropRoom(id) {
 function syncRooms() {
   if (!V.fb) return;
   const uid = V.fb.uid;
-  if (uid !== V.uid) { stopAllRooms(); V.uid = uid; }               // jiný účet / odhlášení → vše znovu
+  if (uid !== V.uid) { stopAllRooms(); V.uid = uid; V.code = ''; if (uid) deviceCode(uid).then(c => { V.code = c; }); }   // jiný účet / odhlášení → vše znovu
   if (!uid) { render(); return; }
-  const want = new Set(local.rooms().map(r => r.id));                // všechny skupiny v zařízení, i „čekající“
+  watchServerRooms();
+  const want = new Set(allRooms().map(r => r.id));                   // skupiny v zařízení i na serveru, i „čekající“
   for (const id of [...V.mySubs.keys()]) if (!want.has(id)) dropRoom(id);
   for (const id of want) if (!V.mySubs.has(id) && !V.retry.has(id)) watchMe(id);
   const ok = approvedRooms().map(r => r.id);
@@ -713,6 +777,32 @@ function makeDraggable(el) {
 }
 
 /* ---------- sekce VIDEOCHAT ---------- */
+/* 1.2.2: srozumitelné vysvětlení, proč tady hovory nejsou, + bezpečná cesta: otevřít pozvánku PŘÍMO v této BAND APP. */
+function inviteToken(v) { v = String(v || '').trim(); const m = /[#&?]t=([A-Za-z0-9_-]{22})(?![A-Za-z0-9_-])/.exec(v); const t = m ? m[1] : v; return validToken(t) ? t : ''; }
+function notMember(kind) {
+  const out = [];
+  if (kind === 'pending') {
+    out.push(h('div', { class: 'note', id: 'vcNoRooms', 'data-state': 'pending', text: '⏳ Tento telefon čeká na schválení ve skupině. Až tě zakladatelka v Kamarádkách schválí, hovory se tady zapnou samy (bez restartu).' }));
+    if (V.code) out.push(h('p', { class: 'note', id: 'vcMyCode', text: 'Kód zařízení: ' + V.code + ' – zakladatelka ho uvidí u tvé žádosti.' }));
+    return out;
+  }
+  out.push(h('div', { class: 'vc-err', role: 'alert', id: 'vcNoRooms', 'data-state': kind === 'signed-out' ? 'not-signed-in' : 'not-member' },
+    h('strong', { text: 'Tento telefon není přihlášený jako schválený člen skupiny.' }),
+    h('p', { text: kind === 'signed-out'
+      ? 'Tahle nainstalovaná BAND APP zatím není přihlášená do Kamarádek. Pokud ses do skupiny přidal(a) přes odkaz pozvánky v prohlížeči nebo v jiné aplikaci, je to jiné přihlášení než tady – proto ti sem hovory nechodí.'
+      : 'Tahle BAND APP je přihlášená, ale v žádné skupině tu nejsi. Pokud ses přidal(a) přes odkaz pozvánky v prohlížeči nebo v jiné aplikaci, je to jiné přihlášení než tady.' }),
+    h('p', { text: 'Řešení: požádej zakladatelku skupiny o NOVOU pozvánku, zkopíruj odkaz a vlož ho sem. Pozvánka se otevře přímo v této BAND APP; potom tě zakladatelka znovu schválí. Nic se nesmaže.' })));
+  if (V.code) out.push(h('p', { class: 'note', id: 'vcMyCode', text: 'Kód zařízení: ' + V.code }));
+  const inp = h('input', { type: 'url', id: 'vcInviteLink', placeholder: 'Vlož odkaz pozvánky (…join.html#t=…)', autocomplete: 'off', 'aria-label': 'Odkaz pozvánky' });
+  const err = h('div', { class: 'vc-err', role: 'alert', hidden: true });
+  const go = h('button', { type: 'button', class: 'vc-callbtn primary', id: 'vcInviteGo', onclick: () => {
+    const t = inviteToken(inp.value);
+    if (!t) { err.hidden = false; err.textContent = 'Tohle nevypadá jako odkaz pozvánky BAND APP.'; return; }
+    location.href = 'join.html' + location.search + '#t=' + encodeURIComponent(t);   // stejná adresa a rozsah → zůstává v nainstalované aplikaci
+  } }, 'Otevřít pozvánku tady');
+  out.push(h('div', { class: 'vc-act', style: 'flex-wrap:wrap' }, inp, go), err);
+  return out;
+}
 function render() {
   const root = V.root; if (!root) return;
   const kids = [];
@@ -720,10 +810,15 @@ function render() {
   if (V.err) kids.push(h('div', { class: 'vc-err', role: 'alert', id: 'vcErr', text: V.err }));
   const rooms = approvedRooms();
   if (!V.fb) {
-    kids.push(h('p', { class: 'note', 'data-state': 'no-rooms', id: 'vcNoRooms', text: rooms.length ? 'Videochat se připojuje…' : 'Videochat je jen pro schválené členky skupiny. Nejdřív se přidej do skupiny v sekci Kamarádky (a počkej na schválení).' }));
+    if ((V.noAuth || (V.base && !V.base.auth.currentUser)) && !local.rooms().length && !lockedReason()) { kids.push(...notMember('signed-out')); put(root, kids); return; }
+    kids.push(h('p', { class: 'note', 'data-state': 'no-rooms', id: 'vcNoRooms', text: rooms.length ? 'Videochat se připojuje…' : (lockedReason() ? 'Tento telefon je v Kamarádkách odhlášený. Přihlas se tam znovu obnovovacím kódem – potom se zapnou i hovory.' : 'Videochat je jen pro schválené členky skupiny. Nejdřív se přidej do skupiny v sekci Kamarádky (a počkej na schválení).') }));
     put(root, kids); return;
   }
-  if (!rooms.length) { kids.push(h('p', { class: 'note', id: 'vcNoRooms', 'data-state': 'no-rooms', text: 'Videochat je jen pro schválené členky skupiny. Nejdřív se přidej do skupiny v sekci Kamarádky (a počkej na schválení).' })); put(root, kids); return; }
+  if (!rooms.length) {
+    if (V.srvState !== 'ok' && V.srvState.indexOf('chyba') !== 0 && !allRooms().length) { kids.push(h('p', { class: 'note', id: 'vcNoRooms', 'data-state': 'loading', text: 'Načítám tvoje skupiny…' })); put(root, kids); return; }
+    const pend = allRooms().some(r => (V.my.has(r.id) ? V.my.get(r.id) : (V.srv.get(r.id) || r.role)) === 'pending');
+    kids.push(...notMember(pend ? 'pending' : 'none')); put(root, kids); return;
+  }
   if (rooms.length > 1) kids.push(h('div', { class: 'vc-rooms' }, rooms.map(r => h('button', { type: 'button', class: 'secondary' + (r.id === V.roomId ? ' on' : ''), onclick: () => { V.roomId = r.id; render(); } }, r.name || 'Skupina'))));
   const roomId = V.roomId, mem = V.members.get(roomId);
   // probíhající hovory (k návratu po výpadku nebo pro skupinový hovor, který už běží)
@@ -765,22 +860,34 @@ function diagEl() {
   return (V.diagEl = el);
 }
 const ago = t => t ? Math.max(0, Math.round((Date.now() - t) / 1000)) + ' s' : '–';
+function authText() {
+  if (lockedReason()) return 'odhlášeno (zadej obnovovací kód v Kamarádkách)';
+  const u = V.base && V.base.auth.currentUser;
+  if (!V.base) return V.noAuth ? 'ne' : '–';
+  if (!u) return 'ne';
+  const pr = (u.providerData || []).map(p => p.providerId);
+  return 'ano · ' + (u.isAnonymous ? 'anonymní' : pr.includes('password') ? 'obnovovací kód (e-mail)' : pr.includes('google.com') ? 'Google' : 'jiný');
+}
 async function fillDiag() {
   const el = V.diagEl; if (!el || !el.open) return;
   let cache = '–', sw = 'ne';
   try { cache = (await caches.keys()).filter(k => k.startsWith('band-app-pages-')).join(', ') || 'žádná'; } catch (e) { }
   try { sw = navigator.serviceWorker && navigator.serviceWorker.controller ? 'ano' : 'ne'; } catch (e) { }
-  const rooms = local.rooms(), st = [...V.my.values()];
+  const rooms = local.rooms(), st = [...V.my.values()];  // „Skupiny v zařízení“ = jen místní seznam
   const appr = st.filter(x => OK_ROLES.includes(x)).length, pend = st.filter(x => x === 'pending').length;
   const ls = [...V.listen.values()], on = ls.filter(x => x.state === 'naslouchá').length;
   const states = {}; ls.forEach(x => { const k = x.state + (x.code ? ' (' + x.code + ')' : ''); states[k] = (states[k] || 0) + 1; });
   const pendingIn = [...V.calls.values()].filter(c => live(c) && c.status === 'ringing' && c.createdBy !== V.uid && (!V.handled.has(c.id) || (V.incoming && V.incoming.id === c.id))).length;
-  const e = V.lastErr;
+  let e = V.lastErr;
+  try { const j = JSON.parse(sessionStorage.getItem('bandapp-diag-err') || 'null'); if (j && j.code && (!e || j.at > e.at)) e = j; } catch (x) { }
   const rows = [
     ['Verze aplikace', 'BAND APP ' + APP_VERSION],
     ['Mezipaměť (service worker)', cache + ' · řídí stránku: ' + sw],
     ['Internet', navigator.onLine === false ? 'offline' : 'online'],
-    ['Firebase', V.fb ? (V.uid ? 'připojeno, přihlášeno' : 'připojeno, nepřihlášeno') : (V.starting ? 'připojuje se' : 'nepřipojeno')],
+    ['Firebase', (V.fb || V.base) ? 'připojeno' : V.noAuth ? 'nenačteno – telefon není přihlášený (není co obnovit)' : (V.starting ? 'připojuje se' : 'nepřipojeno')],
+    ['Přihlášení', authText()],
+    ['Kód zařízení', V.code || '–'],
+    ['Moje skupiny na serveru', V.srvState === 'ok' ? String(V.srv.size) + ' · schválené: ' + [...V.srv.values()].filter(x => OK_ROLES.includes(x)).length + ' · čeká: ' + [...V.srv.values()].filter(x => x === 'pending').length : V.srvState],
     ['Skupiny v zařízení', String(rooms.length) + ' · schválené podle serveru: ' + appr + (pend ? ' · čeká na schválení: ' + pend : '')],
     ['Naslouchání příchozím hovorům', (on ? 'AKTIVNÍ' : 'neaktivní') + ' (' + on + ' z ' + appr + ')' + (Object.keys(states).length ? ' · ' + Object.entries(states).map(([k, v]) => k + ': ' + v).join(', ') : '')],
     ['Poslední zpráva o hovorech', 'před ' + ago(V.lastSnap)],

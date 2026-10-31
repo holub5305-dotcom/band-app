@@ -142,7 +142,7 @@ async def main():
         await wait(A, "document.querySelectorAll('#vcPeopleList li').length===2"); await wait(B, "document.querySelectorAll('#vcPeopleList li').length===2")
         # ---------- 8) neschválená ----------
         nr = await D.evaluate("(document.getElementById('vcNoRooms')||{}).textContent||''")
-        ok('čekající: VIDEOCHAT nenabízí volání', 'jen pro schválené' in nr and await D.locator('#vcPeopleList').count() == 0, nr)
+        ok('čekající: VIDEOCHAT nenabízí volání', ('jen pro schválené' in nr or 'čeká na schválení' in nr) and await D.locator('#vcPeopleList').count() == 0, nr)
         deny = await D.evaluate("""(async()=>{const fb=await (await import('./friends.js')).connect();const F=fb.F,db=fb.db,out={};
           const t=async(k,f)=>{try{await f();out[k]='ALLOWED'}catch(e){out[k]=e.code}};
           await t('create',()=>F.setDoc(F.doc(F.collection(db,'rooms','%s','calls')),{createdBy:fb.uid,nick:'Čekající',kind:'video',mode:'direct',participants:[fb.uid,'%s'],status:'ringing',createdAt:F.serverTimestamp(),expiresAt:F.Timestamp.fromMillis(Date.now()+3600e3)}));
