@@ -40,9 +40,10 @@ výsledky main vs. 1.2.0 identické).
 Výchozí stav bez TURN (jen STUN). Když se spojení nenaváže, aplikace po 20 s ukáže „Spojení se nepodařilo –
 zkuste Wi-Fi.“ a 1:1 hovor po 50 s ukončí. Volitelné zapnutí zdarma: `_tools/turn-worker/README.md`.
 
-## Testy (automatické, NE skutečné telefony)
-- Pravidla (emulátor): 73 stávajících + 36 hovorů + 39 kompatibilita s produkčními daty.
-- Prohlížeč (Chromium headless, falešná kamera/mikrofon, emulátor): `tests/browser/vc_calls.py`.
-- Aktualizace a návrat se zachováním dat: `tests/browser/upgrade_rollback.py`.
-- Jádra WebKit a Firefox (headless, ENGINE test, ne skutečné Safari/iPhone): `tests/browser/engines.py`.
-- Služba TURN: `_tools/turn-worker/test-worker.mjs`.
+## Testy (automatické, NE skutečné telefony) – výsledky 31. 10. 2026
+- Pravidla (emulátor, `tests/*.test.mjs`): 73 stávajících (projdou na main i na 1.2.0) + 36 hovorů + 39 kompatibilita
+  s produkčními daty (266 kombinací shodných) – vše PASS.
+- Prohlížeč Chromium headless, falešná kamera/mikrofon, emulátor: `tests/browser/vc_calls.py` 42/42.
+- Aktualizace 1.1.3 → 1.2.0 → návrat na stejné adrese se zachováním dat: `tests/browser/upgrade_rollback.py` 50/50.
+- ENGINE test jader WebKit 26.6 a Firefox 155 (headless, ne skutečné Safari/iPhone/Android): `tests/browser/engines.py` 29/29.
+- Služba TURN: `node _tools/turn-worker/test-worker.mjs $PWD/_tools/turn-worker/worker.js` 13/13.
