@@ -14,11 +14,21 @@ const RING_MS = 45e3, RING_WINDOW_MS = 60e3, CALL_TTL_MS = 3 * 3600e3, HEARTBEAT
   NOCONN_WARN_MS = 20e3, NOCONN_END_MS = 50e3;
 const NOCONN_MSG = 'Spojení se nepodařilo – zkuste Wi-Fi.';   // síť nejspíš blokuje přímé spojení (bez TURN)
 // 1.2.7: když nabídka spojení dorazila, ale ICE (hledání cesty mezi telefony) se nenavázalo – přesnější hláška.
-const turnOn = () => !!TURN_CREDENTIALS_URL || (Array.isArray(STATIC_TURN_SERVERS) && STATIC_TURN_SERVERS.length > 0);
-const ICE_FAIL_MSG = () => turnOn() ? 'Spojení se nepodařilo navázat (ICE selhalo) ani přes TURN server. Zkuste Wi-Fi.'
+// 1.3.0: adresa služby TURN (Cloudflare Worker). V automatických testech (jen localhost + ?emulator=1) ji test smí
+// podstrčit přes localStorage (místní testovací server) – ve skutečné aplikaci se bere jen z rtc-config.js.
+const turnUrl = () => { if (!isEmulator) return TURN_CREDENTIALS_URL; try { return localStorage.getItem('bandapp-test-turn-url') || ''; } catch (e) { return ''; } };
+const testRelayOnly = () => { if (!isEmulator) return false; try { return localStorage.getItem('bandapp-test-relay-only') === '1'; } catch (e) { return false; } };
+const turnOn = () => !!turnUrl() || (Array.isArray(STATIC_TURN_SERVERS) && STATIC_TURN_SERVERS.length > 0);
+const TURN_DOWN_MSG = 'TURN nedostupný – zkuste Wi-Fi.';
+// TURN je zapnutý, ale nefunguje: služba nevrátila údaje, nebo telefon nedostal žádného „relay“ kandidáta.
+const turnDown = e => turnOn() && (!!(V.turn && V.turn.ok === false) || !!(e && e.noRelay));
+const ICE_FAIL_MSG = e => turnDown(e) ? TURN_DOWN_MSG : turnOn() ? 'Spojení se nepodařilo navázat (ICE selhalo) ani přes TURN server. Zkuste Wi-Fi.'
   : 'Spojení se nepodařilo navázat (ICE selhalo) – pravděpodobně mobilní síť bez TURN serveru. Zkuste obě stejnou Wi-Fi.';
+// 1.3.0: přes TURN (relay) se posílá menší obraz – šetří data i bezplatný měsíční limit TURN.
+const BITRATE = { direct: { one: 650e3, group: 350e3 }, relay: { one: 400e3, group: 250e3 }, audio: 40e3 };
+const RELAY_WAIT_MS = 8e3, GATHER_MS = 3e3, DISC_RESTART_MS = 5e3;
 const NOTIFY_TAG = 'bandapp-hovor';
-export const APP_VERSION = '1.2.7';
+export const APP_VERSION = '1.3.0';
 const RETRY_MS = 15e3, START_CHECK_MS = 15e3;
 const $ = id => document.getElementById(id);
 const rnd = () => { const b = new Uint8Array(9); crypto.getRandomValues(b); return Array.from(b, x => x.toString(16).padStart(2, '0')).join(''); };
@@ -140,24 +150,51 @@ function noteCall(rec, patch) { if (rec) Object.assign(rec, patch); }
 const tms = t => t && t.toMillis ? t.toMillis() : 0;
 const live = c => c && c.status !== 'ended' && tms(c.expiresAt) > nowS();
 
-async function iceServers() {
-  if (isEmulator) return [];                                  // automatické testy: jen místní síť, žádné cizí servery
-  const base = ICE_SERVERS.concat(Array.isArray(STATIC_TURN_SERVERS) ? STATIC_TURN_SERVERS : []);
-  if (!TURN_CREDENTIALS_URL) return base;                     // bez TURN: jen STUN (výchozí stav)
-  if (V.iceCache && V.iceCache.until > Date.now()) return V.iceCache.list;
-  try {
-    const tok = await V.fb.auth.currentUser.getIdToken();
-    const room = V.session ? V.session.roomId : '';
-    const ctl = typeof AbortController !== 'undefined' ? new AbortController() : null, tm = ctl && setTimeout(() => ctl.abort(), 4000);
-    const r = await fetch(TURN_CREDENTIALS_URL + (room ? (TURN_CREDENTIALS_URL.includes('?') ? '&' : '?') + 'room=' + encodeURIComponent(room) : ''),
-      { headers: { Authorization: 'Bearer ' + tok }, signal: ctl ? ctl.signal : undefined, cache: 'no-store' });
-    clearTimeout(tm);
-    if (!r.ok) throw new Error('turn ' + r.status);
-    const j = await r.json(), extra = Array.isArray(j.iceServers) ? j.iceServers : (j.iceServers && j.iceServers.urls ? [j.iceServers] : []);
-    const list = base.concat(extra);
-    V.iceCache = { list, until: Date.now() + 10 * 60e3 }; V.turnState = 'údaje načtené (' + extra.length + ')'; return list;
-  } catch (e) { V.turnState = 'údaje se nenačetly (' + ((e && e.message) || 'chyba') + ') – hovor jen přes STUN'; return base; }                                 // služba TURN nedostupná → hovor zkusí aspoň přímé spojení
+/* 1.3.0: servery pro hledání cesty mezi telefony. TURN údaje NEJSOU v kódu aplikace – vydá je jen služba TURN
+ * (Cloudflare Worker) přihlášené SCHVÁLENÉ člence dané skupiny (ověří přihlášení Firebase i členství).
+ * Načítá se při zazvonění / zahájení hovoru (dopředu), výsledek se drží max. 10 min. Při chybě hovor zkusí aspoň
+ * přímé spojení (STUN) a diagnostika ukáže proč. */
+const hasTurn = list => (list || []).some(x => [].concat(x && x.urls || []).some(u => /^turns?:/.test(String(u))));
+async function iceServers(roomId, force) {
+  const base = (isEmulator ? [] : ICE_SERVERS).concat(Array.isArray(STATIC_TURN_SERVERS) ? STATIC_TURN_SERVERS : []);   // emulátor: žádné cizí servery
+  const url = turnUrl();
+  if (!url) return base;                                      // bez služby TURN: jen STUN (výchozí stav)
+  const room = roomId || (V.session ? V.session.roomId : '');
+  const c = V.iceCache;
+  if (!force && c && c.room === room && c.until > Date.now()) return c.list;
+  if (V.iceLoading && V.iceLoading.room === room) return V.iceLoading.p;
+  const p = (async () => {
+    let tm = null;
+    try {
+      const u = V.fb && V.fb.auth.currentUser; if (!u) throw new Error('nepřihlášeno');
+      const tok = await u.getIdToken();
+      const ctl = typeof AbortController !== 'undefined' ? new AbortController() : null; tm = ctl && setTimeout(() => ctl.abort(), 5000);
+      const r = await fetch(url + (room ? (url.includes('?') ? '&' : '?') + 'room=' + encodeURIComponent(room) : ''),
+        { headers: { Authorization: 'Bearer ' + tok }, signal: ctl ? ctl.signal : undefined, cache: 'no-store', credentials: 'omit', referrerPolicy: 'no-referrer' });
+      if (!r.ok) { let code = ''; try { code = (await r.json()).error || ''; } catch (e) { } throw Object.assign(new Error('HTTP ' + r.status), { status: r.status, code }); }
+      const j = await r.json(), got = Array.isArray(j.iceServers) ? j.iceServers : [];
+      const extra = got.filter(x => x && (typeof x.urls === 'string' || Array.isArray(x.urls)));
+      const list = base.concat(extra), relay = hasTurn(extra);
+      const ttl = Math.min(10 * 60e3, Math.max(60e3, (Number(j.ttl) || 600) * 1000 / 2));
+      V.iceCache = { room, list, until: Date.now() + ttl };
+      V.turn = { ok: relay, at: Date.now(), text: relay ? 'údaje načtené' : 'služba nevrátila TURN server' };
+      if (!relay) V.iceCache.until = Date.now() + 20e3;
+      return list;
+    } catch (e) {
+      const st = e && e.status;
+      const why = st === 503 ? 'TURN na serveru není nastavený' : st === 403 ? 'přístup odmítnut (jen schválené členky)' : st === 401 ? 'přihlášení neověřeno'
+        : st === 429 ? 'příliš mnoho žádostí' : e && e.name === 'AbortError' ? 'služba neodpověděla včas' : st ? 'chyba služby ' + st : 'služba nedostupná';
+      V.turn = { ok: false, at: Date.now(), text: why };
+      V.iceCache = { room, list: base, until: Date.now() + 20e3 };   // krátce si pamatovat neúspěch (žádné bušení do služby)
+      return base;                                              // hovor zkusí aspoň přímé spojení
+    } finally { clearTimeout(tm); }
+  })();
+  V.iceLoading = { room, p };
+  try { return await p; } finally { if (V.iceLoading && V.iceLoading.p === p) V.iceLoading = null; }
 }
+const prefetchIce = roomId => { if (turnUrl()) iceServers(roomId).catch(() => { }); };
+const turnText = () => !turnOn() ? 'ne (jen STUN – na mobilních datech se spojení nemusí navázat)'
+  : !V.turn ? 'ano · údaje se načtou při hovoru' : V.turn.ok ? 'ano · ' + V.turn.text : 'ano, ale nedostupný (' + V.turn.text + ') – hovor jen přes přímé spojení';
 
 /* ---------- média (kamera, mikrofon) ---------- */
 function videoConstraints(facing, group) {
@@ -222,8 +259,22 @@ export async function initVideochat() {
   addEventListener('focus', ensureStarted);
   document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible') ensureStarted(); onVisibility(); });
   addEventListener('pagehide', () => { const s = V.session; if (s) { try { writePeer(s, 'left'); } catch (e) { } } });
-  addEventListener('online', () => { ensureStarted(); const s = V.session; if (s) { banner(s, 'Internet je zpět – obnovuji spojení…', 4000); s.pcs.forEach((p, uid) => { if (!connected(p)) reconnect(s, uid); }); } });
+  addEventListener('online', () => { ensureStarted(); if (V.turn && V.turn.ok === false) V.iceCache = null; const s = V.session; if (s) { banner(s, 'Internet je zpět – obnovuji spojení…', 4000); s.pcs.forEach((p, uid) => { if (!connected(p)) reconnect(s, uid); }); } });
+  // 1.3.0: změna sítě (Wi-Fi ↔ mobilní data). Když se změnil TYP sítě, stará cesta už neplatí → hned nové hledání
+  // cesty (ICE restart) u všech spojení; jinak (jen jiný odhad rychlosti) se obnovují jen nespojená.
+  try {
+    const nc = navigator.connection;
+    if (nc && nc.addEventListener) { V.netType = nc.type || ''; nc.addEventListener('change', () => onNetChange(nc)); }
+  } catch (e) { }
   addEventListener('offline', () => { const s = V.session; if (s) banner(s, 'Bez internetu – hovor se obnoví, až se připojení vrátí.'); });
+}
+function onNetChange(nc) {
+  const type = (nc && nc.type) || '', changed = type !== (V.netType || ''); V.netType = type;
+  if (V.turn && V.turn.ok === false) V.iceCache = null;
+  const s = V.session; if (!s || s.ended || !navigator.onLine) return;
+  let n = 0;
+  s.pcs.forEach((p, uid) => { if (changed || !connected(p)) { p.lastRestart = 0; reconnect(s, uid); n++; } });
+  if (n && changed) banner(s, 'Síť se změnila – obnovuji spojení…', 4000);
 }
 /* 1.2.2: Firebase se načte vždy, když je nastavený (obnoví uložené přihlášení, žádný nový účet).
  * – přihlášený telefon (jakýkoli účet z Kamarádek/pozvánky) → připojit a naslouchat podle členství na serveru;
@@ -415,6 +466,7 @@ async function onCallDoc(c, fresh) {
 }
 function showIncoming(c) {
   closeIncoming(true);
+  prefetchIce(c.roomId);   // 1.3.0: TURN údaje dopředu, už když zvoní
   const who = c.nick || nickOf(c.roomId, c.createdBy), video = c.kind === 'video';
   const others = c.participants.length - 1;
   const el = h('div', { id: 'vcIncoming', role: 'alertdialog', 'aria-label': 'Příchozí hovor' },
@@ -475,6 +527,7 @@ async function startCall(roomId, others, video) {
   // Žádné duplicitní hovory: probíhající hovor se stejnými účastnicemi → připojit se do něj.
   const dup = [...V.calls.values()].find(c => c.roomId === roomId && live(c) && [...c.participants].sort().join(',') === key);
   if (dup) return joinCall(dup, video);
+  prefetchIce(roomId);   // 1.3.0: TURN údaje dopředu (než kamarádka přijme)
   let media; try { media = await getMedia(video, parts.length > 2); } catch (e) { V.err = e.text || mediaErr(e, 'k mikrofonu'); render(); return; }
   const ref = F().doc(F().collection(db(), 'rooms', roomId, 'calls'));
   const call = { createdBy: V.fb.uid, nick: myNick(roomId), kind: video ? 'video' : 'audio', mode: parts.length === 2 ? 'direct' : 'group', participants: parts, status: 'ringing', createdAt: F().serverTimestamp(), expiresAt: F().Timestamp.fromMillis(Date.now() + CALL_TTL_MS) };
@@ -549,8 +602,11 @@ const othersAlive = s => s.participants.filter(u => u !== V.fb.uid && (s.peers.g
 const connected = p => p && p.pc && ['connected', 'completed'].includes(p.pc.iceConnectionState);
 
 async function newPc(s, uid) {
-  const pc = new RTCPeerConnection({ iceServers: await iceServers(), bundlePolicy: 'max-bundle' });
-  const entry = { pc, sid: '', remoteEpoch: '', stream: new MediaStream(), state: 'new', lostAt: 0, offerer: V.fb.uid < uid, born: Date.now(),
+  const ice = await iceServers(s.roomId);
+  const cfg = { iceServers: ice, bundlePolicy: 'max-bundle' };
+  if (testRelayOnly()) cfg.iceTransportPolicy = 'relay';   // jen automatický test „přímá cesta zablokovaná“ (emulátor)
+  const pc = new RTCPeerConnection(cfg);
+  const entry = { pc, turn: hasTurn(ice), noRelay: false, relay: null, discT: null, sid: '', remoteEpoch: '', stream: new MediaStream(), state: 'new', lostAt: 0, offerer: V.fb.uid < uid, born: Date.now(),
     cand: { local: candZero(), remote: candZero() }, st: null, err: '' };
   // 1.2.7 diagnostika: jen TYPY kandidátů (host/srflx/relay), nikdy adresy.
   pc.onicecandidate = e => { if (e.candidate) { const t = candType(e.candidate); entry.cand.local[t] = (entry.cand.local[t] || 0) + 1; } };
@@ -560,8 +616,10 @@ async function newPc(s, uid) {
   pc.oniceconnectionstatechange = () => {
     const st = pc.iceConnectionState; entry.state = st;
     noteCall(s.diag, Object.assign({ phase: 'ICE: ' + st }, (st === 'connected' || st === 'completed') ? { result: 'spojeno' } : {}));
-    if (st === 'connected' || st === 'completed') { entry.lostAt = 0; entry.restarts = 0; s.everConn.add(uid); if (s.noConnWarned) { s.noConnWarned = false; banner(s, 'Spojeno.', 2500); } }
+    if (st === 'connected' || st === 'completed') { clearTimeout(entry.discT); entry.discT = null; entry.lostAt = 0; entry.restarts = 0; s.everConn.add(uid); if (s.noConnWarned || s.turnWarned) { s.noConnWarned = s.turnWarned = false; banner(s, 'Spojeno.', 2500); } }
     else if ((st === 'disconnected' || st === 'failed') && !entry.lostAt) entry.lostAt = Date.now();
+    // 1.3.0: výpadek déle než 5 s (např. přechod Wi-Fi ↔ mobilní data) → nové hledání cesty (ICE restart).
+    if (st === 'disconnected' && !entry.discT) entry.discT = setTimeout(() => { entry.discT = null; if (!s.ended && s.pcs.get(uid) === entry && !connected(entry)) reconnect(s, uid); }, DISC_RESTART_MS);
     if (st === 'failed') reconnect(s, uid);
     renderCall(s);
   };
@@ -577,12 +635,25 @@ function attachLocal(s, entry, fromOffer) {
   ta.sender.replaceTrack(a).catch(() => { }); tv.sender.replaceTrack(v).catch(() => { });
   entry.audio = ta.sender; entry.video = tv.sender;
 }
+const videoCap = (s, entry) => BITRATE[entry.relay ? 'relay' : 'direct'][s.participants.length > 2 ? 'group' : 'one'];
 function limitBitrate(s, entry) {
   const cap = (sender, max) => { try { const p = sender.getParameters(); if (!p.encodings || !p.encodings.length) p.encodings = [{}]; p.encodings[0].maxBitrate = max; sender.setParameters(p).catch(() => { }); } catch (e) { } };
-  cap(entry.video, s.participants.length > 2 ? 350e3 : 650e3); cap(entry.audio, 40e3);
+  entry.cap = videoCap(s, entry); cap(entry.video, entry.cap); cap(entry.audio, BITRATE.audio);
 }
-/* Bez „trickle ICE“: počká na sesbírání kandidátů (max 3 s) a pošle jedinou zprávu – méně zápisů do databáze. */
-const gathered = pc => new Promise(r => { if (pc.iceGatheringState === 'complete') return r(); const t = setTimeout(r, 3000); pc.addEventListener('icegatheringstatechange', () => { if (pc.iceGatheringState === 'complete') { clearTimeout(t); r(); } }); });
+/* Bez „trickle ICE“: počká na sesbírání kandidátů a pošle jedinou zprávu – méně zápisů do databáze.
+ * Bez TURN max 3 s (jako dřív). 1.3.0: s TURN počká na „relay“ kandidáta (přenos přes TURN) až ~8 s –
+ * na mobilních datech bez něj spojení často nevznikne. Když relay nepřijde, entry.noRelay → „TURN nedostupný“. */
+const gathered = entry => new Promise(r => {
+  const pc = entry.pc, t0 = Date.now();
+  const check = () => {
+    const t = Date.now() - t0, relay = (entry.cand.local.relay || 0) > 0;
+    if (pc.iceGatheringState === 'complete' || t >= RELAY_WAIT_MS || (t >= GATHER_MS && (!entry.turn || relay))) {
+      clearInterval(iv); pc.removeEventListener('icegatheringstatechange', check);
+      entry.noRelay = !!entry.turn && !relay; r();
+    }
+  };
+  const iv = setInterval(check, 100); pc.addEventListener('icegatheringstatechange', check); check();
+});
 async function sendSignal(s, to, type, sid, sdp) {
   const ref = F().doc(F().collection(db(), 'rooms', s.roomId, 'calls', s.callId, 'signals'));
   s.sent.push(ref); return F().setDoc(ref, { from: V.fb.uid, to, type, sid, sdp, createdAt: F().serverTimestamp() });
@@ -595,7 +666,7 @@ async function makeOffer(s, uid, epoch) {
   try {
     await entry.pc.setLocalDescription(await entry.pc.createOffer());
     limitBitrate(s, entry);
-    await gathered(entry.pc);
+    await gathered(entry);
     if (s.ended || s.pcs.get(uid) !== entry) return;
     await sendSignal(s, uid, 'offer', entry.sid, entry.pc.localDescription.sdp);
     if (!connected(entry)) noteCall(s.diag, { phase: 'nabídka odeslána' });
@@ -613,7 +684,7 @@ async function onSignal(s, id, d) {
       attachLocal(s, entry, true);
       await entry.pc.setLocalDescription(await entry.pc.createAnswer());
       limitBitrate(s, entry);
-      await gathered(entry.pc);
+      await gathered(entry);
       if (s.ended || s.pcs.get(d.from) !== entry) return;
       await sendSignal(s, d.from, 'answer', d.sid, entry.pc.localDescription.sdp);
       if (!connected(entry)) noteCall(s.diag, { phase: 'nabídka přijata, odpověď odeslána' });
@@ -635,11 +706,13 @@ function reconnect(s, uid) {
   if (!p || p.state !== 'joined') return;
   if (entry && Date.now() - (entry.lastRestart || 0) < 8e3) return;
   if (entry) entry.lastRestart = Date.now();
+  if (V.turn && V.turn.ok === false) V.iceCache = null;   // 1.3.0: TURN předtím selhal → při obnově zkusit znovu
   if (V.fb.uid < uid) makeOffer(s, uid, p.epoch).then(() => { const e = s.pcs.get(uid); if (e) e.lastRestart = Date.now(); });
   else { s.epoch = rnd(); writePeer(s, 'joined').catch(() => { }); }
 }
 function closePeer(s, uid) {
   const e = s.pcs.get(uid); if (!e) return;
+  clearTimeout(e.discT); e.discT = null;
   e.finalIce = e.pc.iceConnectionState; e.finalConn = e.pc.connectionState; (s.closed || (s.closed = new Map())).set(uid, e);   // 1.2.7: pro souhrn v diagnostice
   s.pcs.delete(uid); try { e.pc.ontrack = e.pc.oniceconnectionstatechange = e.pc.onicecandidate = e.pc.onconnectionstatechange = e.pc.onsignalingstatechange = e.pc.onicegatheringstatechange = null; e.pc.close(); } catch (x) { }
   e.stream.getTracks().forEach(t => { try { t.stop(); } catch (x) { } });
@@ -664,17 +737,21 @@ function tick(s) {
       const waited = now - (s.firstTry.get(uid) || now);
       // ICE hláška jen když signalizace proběhla (máme popis od kamarádky); jinak nabídka/odpověď nedorazila.
       const sigOk = !!(e && e.hadRemote);
-      const msg = sigOk ? ICE_FAIL_MSG() : NOCONN_MSG;
+      const msg = sigOk || turnDown(e) ? ICE_FAIL_MSG(e) : NOCONN_MSG;
       if (waited > NOCONN_WARN_MS && !s.noConnWarned) { s.noConnWarned = true; banner(s, msg); }
       if (waited > NOCONN_END_MS && s.mode === 'direct') { noteCall(s.diag, { result: 'spojení se nenavázalo (' + (sigOk ? 'ICE ' + e.pc.iceConnectionState : 'nabídka/odpověď nedorazila') + ')' }); hangup(s, true, msg); return; }
     }
   }
   for (const [uid, e] of s.pcs) {
+    // 1.3.0: spojení (i obnovované) nevzniká a TURN nefunguje → jasně říct „TURN nedostupný – zkuste Wi-Fi“.
+    if (!connected(e) && turnDown(e) && (e.lostAt || now - e.born > 10e3) && !s.turnWarned && e.hadRemote) { s.turnWarned = true; banner(s, TURN_DOWN_MSG); }
+    // 1.3.0: obnovované spojení, které se ani po 15 s nenavázalo (např. TURN byl chvíli nedostupný), se zkouší znovu.
+    if (!connected(e) && !e.lostAt && e.hadRemote && now - e.born > 15e3 && (s.everConn.has(uid) || e.noRelay)) e.lostAt = e.born;
     if (!connected(e) && e.lostAt && now - e.lostAt > 6e3) reconnect(s, uid);
     const stale = now - (s.seen.get(uid) || 0) > STALE_MS;
     if (!connected(e) && e.lostAt && now - e.lostAt > LOST_MS && stale) {
       closePeer(s, uid); s.peers.set(uid, Object.assign({}, s.peers.get(uid), { state: 'left' }));
-      if (s.mode === 'direct') { hangup(s, true, 'Spojení se nepodařilo obnovit. Hovor skončil. ' + ICE_FAIL_MSG()); return; }
+      if (s.mode === 'direct') { hangup(s, true, 'Spojení se nepodařilo obnovit. Hovor skončil. ' + ICE_FAIL_MSG(e)); return; }
     }
   }
   if (s.mode === 'direct' && s.anyJoined && !s.pcs.size && now - (s.seen.get(s.participants.find(u => u !== V.fb.uid)) || 0) > STALE_MS) { hangup(s, true, 'Spojení se nepodařilo obnovit. Hovor skončil.'); return; }
@@ -972,8 +1049,15 @@ async function sampleStats(s) {
         if (x.type === 'candidate-pair') pairs.push(x);
       });
       const pr = (selId && r.get(selId)) || pairs.find(x => x.selected) || pairs.find(x => x.nominated && x.state === 'succeeded');
-      if (pr) { const l = r.get(pr.localCandidateId), m = r.get(pr.remoteCandidateId); st.pair = (l && l.candidateType || '?') + ' ↔ ' + (m && m.candidateType || '?'); }
-      if (s.pcs.get(uid) === e) { e.prev = e.st; e.st = st; }
+      if (pr) {
+        const l = r.get(pr.localCandidateId), m = r.get(pr.remoteCandidateId), lt = l && l.candidateType || '?', mt = m && m.candidateType || '?';
+        st.pair = lt + ' ↔ ' + mt; st.relay = lt === 'relay' || mt === 'relay';
+      }
+      if (s.pcs.get(uid) === e) {
+        e.prev = e.st; e.st = st;
+        // 1.3.0: cesta přes TURN → nižší datový tok obrazu (1:1 ~400 kb/s, skupina ~250 kb/s); přímá cesta → jako dřív.
+        if (st.pair && e.relay !== st.relay) { e.relay = st.relay; limitBitrate(s, e); }
+      }
     } catch (x) { }
   }
   renderCallDiag(s);
@@ -991,6 +1075,7 @@ function playState(s, uid) {
   if (!t.v.srcObject.getTracks().some(x => x.readyState === 'live' && !x.muted)) return 'čeká na data (nic nepřichází)';
   return t.v.dataset.play || (t.v.paused ? 'čeká' : 'hraje');
 }
+const pathText = e => { const st = e && e.st; return !st || !st.pair ? '–' : st.relay ? 'přes TURN (relay)' : 'přímé spojení'; };
 const iceOf = e => e.finalIce || e.pc.iceConnectionState, connOf = e => e.finalConn || e.pc.connectionState || '–';
 function verdict(s, uid, summary) {
   const p = s.peers.get(uid) || {}, e = s.pcs.get(uid) || (summary && s.closed && s.closed.get(uid));
@@ -999,7 +1084,7 @@ function verdict(s, uid, summary) {
   if (e.err) return '❌ Signalizace: ' + e.err;
   if (!e.hadRemote) return Date.now() - e.born > 10e3 ? '⚠️ Nabídka/odpověď spojení nedorazila (signalizace).' + (s.sigErr ? ' ' + s.sigErr : '') : '⏳ Vyjednávám spojení…';
   if (!['connected', 'completed'].includes(iceOf(e)) && !(summary && s.everConn.has(uid))) {
-    if (iceOf(e) === 'failed' || Date.now() - e.born > 15e3) return '❌ ' + ICE_FAIL_MSG() + ' (kandidáti: místní ' + candSum(e.cand.local) + ', od kamarádky ' + candSum(e.cand.remote) + ')';
+    if (iceOf(e) === 'failed' || Date.now() - e.born > 15e3) return '❌ ' + ICE_FAIL_MSG(e) + ' (kandidáti: místní ' + candSum(e.cand.local) + ', od kamarádky ' + candSum(e.cand.remote) + ')';
     return '⏳ Hledám cestu mezi telefony (ICE ' + iceOf(e) + ')…';
   }
   if (!e.st || !e.prev) return '⏳ Spojeno, měřím přenos…';
@@ -1021,6 +1106,8 @@ function peerRows(s, uid) {
     ['Spojení (connectionState)', e.pc.connectionState || '–'],
     ['Kandidáti', 'místní ' + candText(e.cand.local) + ' · od kamarádky ' + candText(e.cand.remote)],
     ['Vybraná cesta', (st && st.pair) || '–'],
+    ['Limit obrazu', e.cap ? Math.round(e.cap / 1000) + ' kb/s' + (e.relay ? ' (šetří data přes TURN)' : '') : '–'],
+    ...(e.turn ? [['TURN kandidát (relay)', e.cand.local.relay ? 'ano' : e.noRelay ? 'ne – ' + TURN_DOWN_MSG : 'čekám…']] : []),
     ['Přichází obraz', (inV ? 'ano' : 'ne') + ' · snímků ' + (st ? st.inVF : 0) + ' · ' + kB(st ? st.inVB : 0) + ' · stopa: ' + trackTxt(rs.getVideoTracks()[0])],
     ['Přichází zvuk', (inA ? 'ano' : 'ne') + ' · ' + kB(st ? st.inAB : 0) + ' · stopa: ' + trackTxt(rs.getAudioTracks()[0])],
     ['Odchází obraz', (flow(e, 'outVB') ? 'ano' : 'ne') + ' · snímků ' + (st ? st.outVF : 0) + ' · ' + kB(st ? st.outVB : 0)],
@@ -1038,9 +1125,10 @@ function renderCallDiag(s) {
   const me = V.fb.uid, others = s.participants.filter(u => u !== me), lv = s.stream && s.stream.getVideoTracks()[0], la = s.stream && s.stream.getAudioTracks()[0], pm = s.perm || {};
   const dl = rows => h('dl', {}, ...rows.flatMap(([k, v]) => [h('dt', { text: k }), h('dd', { text: v })]));
   el.replaceChildren(h('b', { text: '🛠 Diagnostika spojení (bez osobních údajů a adres)' }),
-    ...others.flatMap(u => [h('h4', { text: nickOf(s.roomId, u) + (codeOf(u) ? ' · ' + codeOf(u) : '') }), h('p', { class: 'vc-verdict', text: verdict(s, u) }), dl(peerRows(s, u))]),
+    ...others.flatMap(u => [h('h4', { text: nickOf(s.roomId, u) + (codeOf(u) ? ' · ' + codeOf(u) : '') }), h('p', { class: 'vc-verdict', text: verdict(s, u) }),
+      h('p', { class: 'vc-path', text: 'Cesta: ' + pathText(s.pcs.get(u)) }), dl(peerRows(s, u))]),
     h('h4', { text: 'Můj telefon' }),
-    dl([['TURN', turnOn() ? 'ano' + (V.turnState ? ' · ' + V.turnState : '') : 'ne (jen STUN – na mobilních datech se spojení nemusí navázat)'],
+    dl([['TURN', turnText()],
       ['Kamera', 'oprávnění: ' + (pm.cam || '…') + ' · ' + (s.cam ? 'zapnutá' : 'vypnutá') + ' · stopa: ' + trackTxt(lv)],
       ['Mikrofon', 'oprávnění: ' + (pm.mic || '…') + ' · ' + (s.mic ? 'zapnutý' : 'vypnutý') + ' · stopa: ' + trackTxt(la)],
       ['Internet', navigator.onLine === false ? 'offline' : 'online']]),
@@ -1052,12 +1140,12 @@ function mediaSummary(s) {
     const e = s.pcs.get(u) || (s.closed && s.closed.get(u)), st = e && e.st, c = codeOf(u);
     const v = verdict(s, u, true).replace(/^\S+\s/, '');
     if (!e) return (c ? c + ': ' : '') + 'spojení nevzniklo (' + v + ')';
-    return (c ? c + ': ' : '') + 'ICE ' + iceOf(e) + ' · spojení ' + connOf(e) + ' · cesta ' + ((st && st.pair) || '–')
+    return (c ? c + ': ' : '') + 'ICE ' + iceOf(e) + ' · spojení ' + connOf(e) + ' · cesta ' + ((st && st.pair) || '–') + ' · Cesta: ' + pathText(e)
       + ' · kandidáti místní ' + candText(e.cand.local) + ' / od kamarádky ' + candText(e.cand.remote)
       + ' · přišlo snímků ' + (st ? st.inVF : 0) + ', zvuk ' + kB(st ? st.inAB : 0) + ' · odešlo obraz ' + kB(st ? st.outVB : 0) + ', zvuk ' + kB(st ? st.outAB : 0)
       + ' · přehrávání ' + playState(s, u) + (e.err ? ' · chyba ' + e.err : '') + ' · ' + v;
   });
-  return { at: Date.now(), text: (s.outgoing ? 'odchozí' : 'příchozí') + ' · trval ' + Math.round((Date.now() - s.started) / 1000) + ' s · TURN ' + (turnOn() ? 'ano' : 'ne') + ' · ' + parts.join(' | ') };
+  return { at: Date.now(), text: (s.outgoing ? 'odchozí' : 'příchozí') + ' · trval ' + Math.round((Date.now() - s.started) / 1000) + ' s · TURN ' + (turnOn() ? (V.turn && V.turn.ok === false ? 'nedostupný' : 'ano') : 'ne') + ' · ' + parts.join(' | ') };
 }
 
 /* ---------- Diagnostika hovorů (1.2.1) ----------
@@ -1112,7 +1200,7 @@ async function fillDiag() {
     ['Stránka', V.page || '–'],
     ['Poslední odchozí hovor', callRow(V.lastOut)],
     ['Poslední příchozí hovor', callRow(V.lastIn)],
-    ['TURN server', turnOn() ? 'ano' + (V.turnState ? ' · ' + V.turnState : '') : 'ne (jen STUN – na mobilních datech se spojení nemusí navázat)'],
+    ['TURN server', turnText()],
     ...(V.session ? [['Probíhající hovor – média', mediaSummary(V.session).text]] : []),
     ['Poslední hovor – média', V.lastMedia ? 'před ' + ago(V.lastMedia.at) + ' · ' + V.lastMedia.text : 'žádný (od otevření aplikace)'],
     ['Upozornění', typeof Notification === 'undefined' ? 'nepodporováno' : Notification.permission === 'granted' ? 'povolena' : 'nepovolena']
@@ -1152,6 +1240,6 @@ async function retryAuth() {
   } finally { V.retrying = false; render(); fillDiag(); }
 }
 /* Jen pro automatické testy v emulátoru (localhost + ?emulator=1): náhled do stavu. Ve skutečné aplikaci neexistuje. */
-if (isEmulator) window.__vc = { V, startCall: (...a) => startCall(...a), state: () => { const s = V.session; return s && { callId: s.callId, mode: s.mode, cam: s.cam, mic: s.mic, tracks: s.stream ? s.stream.getTracks().map(t => t.kind + ':' + t.readyState + ':' + t.enabled) : [], pcs: [...s.pcs].map(([u, e]) => [u, e.pc.iceConnectionState, e.stream.getTracks().map(t => t.kind + ':' + (t.muted ? 'muted' : 'live')).join(',')]), peers: [...s.peers].map(([u, p]) => [u, p.state, p.cam, p.mic]) }; } };
+if (isEmulator) window.__vc = { V, startCall: (...a) => startCall(...a), state: () => { const s = V.session; return s && { callId: s.callId, mode: s.mode, cam: s.cam, mic: s.mic, tracks: s.stream ? s.stream.getTracks().map(t => t.kind + ':' + t.readyState + ':' + t.enabled) : [], pcs: [...s.pcs].map(([u, e]) => [u, e.pc.iceConnectionState, e.stream.getTracks().map(t => t.kind + ':' + (t.muted ? 'muted' : 'live')).join(','), { relay: e.relay, cap: e.cap, turn: e.turn, noRelay: e.noRelay, cand: e.cand.local }]), peers: [...s.peers].map(([u, p]) => [u, p.state, p.cam, p.mic]) }; } };
 
 if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', () => initVideochat()); else initVideochat();

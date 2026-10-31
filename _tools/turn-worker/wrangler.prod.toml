@@ -1,0 +1,23 @@
+# BAND APP – PRODUKČNÍ TURN worker (Cloudflare Workers Free). TAJEMSTVÍ SEM NEPATŘÍ.
+# TURN_USERNAME a TURN_PASSWORD se zadávají jen v Cloudflare (Dashboard → Variables and Secrets → typ Secret,
+# nebo `npx wrangler secret put TURN_USERNAME`). Repozitář je veřejný.
+name = "bandapp-turn-prod"
+main = "worker.js"
+compatibility_date = "2026-10-01"
+workers_dev = true
+preview_urls = false
+# Žádné logy požadavků (nic se neukládá).
+[observability]
+enabled = false
+
+[vars]
+TURN_MODE = "static"                       # ExpressTURN Free; "cloudflare" = Realtime TURN (placené, vypnuto)
+TURN_URLS = "turn:free.expressturn.com:3478?transport=udp,turn:free.expressturn.com:3478?transport=tcp"
+FIREBASE_PROJECT_ID = "band-app-7c9ca"      # PRODUKČNÍ projekt BAND APP (tokeny z testovacího projektu neprojdou)
+ALLOWED_ORIGIN = "https://holub5305-dotcom.github.io"
+TTL_SECONDS = "14400"
+RATE_PER_10MIN = "30"
+
+# Nasazení (až po souhlasu): npx wrangler deploy -c wrangler.prod.toml
+# Tajemství zadává jen majitel: npx wrangler secret put TURN_USERNAME -c wrangler.prod.toml (a TURN_PASSWORD)
+# Adresa: https://bandapp-turn-prod.holub5305.workers.dev/ice  (bez tajemství vrací /ice 503 → aplikace jede jako 1.2.7)
