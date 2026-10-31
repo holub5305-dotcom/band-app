@@ -6,6 +6,7 @@ import asyncio, json, os, re, shutil, subprocess, sys
 from playwright.async_api import async_playwright
 HERE = os.path.dirname(os.path.abspath(__file__)); RULES = os.path.join(HERE, '..', '..', 'firestore.rules')
 SEED_CWD = os.environ['SEED_CWD']; SEED = os.path.join(SEED_CWD, '_seed_vc.mjs'); shutil.copy(os.path.join(HERE, 'seed.mjs'), SEED)
+VER = os.environ.get('APPV', '1.2.1')
 URL = 'http://localhost:8793/index.html?emulator=1'
 FAKE = ['--use-fake-ui-for-media-stream', '--use-fake-device-for-media-stream', '--autoplay-policy=no-user-gesture-required']
 R = []
@@ -36,7 +37,7 @@ async def engine(p, chrome, bt, label):
     await c.route('**/*', guard)
     pg = await c.new_page(); pg.on('pageerror', lambda e: errs.append(str(e))); pg.on('dialog', lambda d: asyncio.ensure_future(d.accept()))
     await pg.goto(URL); await pg.wait_for_timeout(1500)
-    ok(f'{label}: stránka se načte, menu VIDEOCHAT, patička 1.2.0', await pg.locator('nav.bandnav a[href="#videochat"]').count() == 1 and 'BAND APP 1.2.0' in await pg.inner_text('.footer'))
+    ok(f'{label}: stránka se načte, menu VIDEOCHAT, patička ' + VER, await pg.locator('nav.bandnav a[href="#videochat"]').count() == 1 and 'BAND APP ' + VER in await pg.inner_text('.footer'))
     sw = await pg.evaluate("navigator.serviceWorker?navigator.serviceWorker.ready.then(r=>!!r.active).catch(e=>String(e)):'none'")
     ok(f'{label}: service worker aktivní', sw is True, sw)
     vt = await pg.inner_text('#videochat'); ok(f'{label}: sekce VIDEOCHAT vykreslena', 'Soukromé video a hlasové hovory' in vt, vt[:100])
