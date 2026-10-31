@@ -41,7 +41,7 @@ async def main():
         A, B, C, D = (P[k]['pg'] for k in 'ABCD'); U = {k: P[k]['uid'] for k in 'ABCD'}
         room = 'roomTest1'
         seed = {'room': room, 'owner': U['A'], 'members': [{'uid': U['A'], 'nick': 'Laurinka', 'status': 'owner'}, {'uid': U['B'], 'nick': 'Amy', 'status': 'approved'}, {'uid': U['C'], 'nick': 'Zoe', 'status': 'approved'}, {'uid': U['D'], 'nick': 'Čekající', 'status': 'pending'}]}
-        print(subprocess.run(['node', SEED, RULES, json.dumps(seed)], capture_output=True, text=True, cwd=SEED_CWD).stdout.strip())
+        _sr = subprocess.run(['node', SEED, RULES, json.dumps(seed)], capture_output=True, text=True, cwd=SEED_CWD); print(_sr.stdout.strip(), _sr.stderr.strip()[-500:])
         for k, role, nick in [('A', 'owner', 'Laurinka'), ('B', 'approved', 'Amy'), ('C', 'approved', 'Zoe'), ('D', 'pending', 'Čekající')]:
             pg = P[k]['pg']
             await pg.evaluate(f"localStorage.setItem('bandapp-friends-rooms', JSON.stringify([{{id:'{room}',name:'Kapela',role:'{role}'}}]));localStorage.setItem('bandapp-friends-nick', JSON.stringify('{nick}'))")
@@ -128,6 +128,18 @@ async def main():
         ok('C opustí skupinový hovor → A a B pokračují (hovor neskončil)', await wait(C, "!__vc.state()") and await wait(A, conn % 1, 20000) and await wait(B, conn % 1, 20000))
         await A.click('#vcHang')
         ok('poslední odchod ukončí skupinový hovor', await wait(A, "!__vc.state()") and await wait(B, "!__vc.state()", 20000))
+        # ---------- 7) síť nepustí přímé spojení (simulace mobilních dat bez TURN) ----------
+        await A.wait_for_timeout(4500)
+        NOICE = "(()=>{if(window.__noIce)return;window.__noIce=1;const O=window.RTCPeerConnection;window.RTCPeerConnection=function(c){return new O(Object.assign({},c||{},{iceServers:[],iceTransportPolicy:'relay'}))};window.RTCPeerConnection.prototype=O.prototype})()"
+        await A.evaluate(NOICE); await B.evaluate(NOICE)
+        await A.click(f'#vcPeopleList li[data-uid="{U["B"]}"] [data-act=video]')
+        await wait(B, "document.getElementById('vcIncoming')"); await B.click('#vcAccept')
+        MSG = 'Spojení se nepodařilo – zkuste Wi-Fi'
+        ok('bez možnosti spojení: po ~20 s hláška „Spojení se nepodařilo – zkuste Wi-Fi.“ (obě strany)', await wait(A, "(()=>{const b=document.querySelector('#vcCall .vc-banner');return b&&!b.hidden&&b.textContent.includes('%s')})()" % MSG, 35000) and await wait(B, "(()=>{const b=document.querySelector('#vcCall .vc-banner');return b&&!b.hidden&&b.textContent.includes('%s')})()" % MSG, 35000))
+        await A.screenshot(path=SHOTS+'/noconn-A.png')
+        ok('bez možnosti spojení: 1:1 hovor po ~50 s skončí se stejnou hláškou, kamera uvolněná', await wait(A, "!__vc.state()&&document.getElementById('videochatApp').innerText.includes('%s')" % MSG, 45000) and await wait(B, "!__vc.state()", 20000))
+        await A.reload(); await B.reload(); await A.wait_for_timeout(1500)
+        await wait(A, "document.querySelectorAll('#vcPeopleList li').length===2"); await wait(B, "document.querySelectorAll('#vcPeopleList li').length===2")
         # ---------- 8) neschválená ----------
         nr = await D.evaluate("(document.getElementById('vcNoRooms')||{}).textContent||''")
         ok('čekající: VIDEOCHAT nenabízí volání', 'jen pro schválené' in nr and await D.locator('#vcPeopleList').count() == 0, nr)

@@ -1,4 +1,4 @@
-/* BAND APP 1.2.0 (TESTOVACÍ VERZE) – VIDEOCHAT: soukromé video a hlasové hovory jen pro SCHVÁLENÉ členky skupiny.
+/* BAND APP 1.2.0 – VIDEOCHAT: soukromé video a hlasové hovory jen pro SCHVÁLENÉ členky skupiny.
  * Samostatný ES modul. Používá stejné přihlášení a stejný Firebase jako Kamarádky (friends.js), nic v nich nemění.
  * Obraz a zvuk jdou PŘÍMO mezi telefony (WebRTC, šifrováno DTLS-SRTP). Přes Firestore jde jen signalizace
  * (kdo volá, stav, technický popis spojení SDP – příjemkyně ho hned po zpracování smaže).
@@ -8,9 +8,11 @@
  * Omezení: hovor zazvoní jen v OTEVŘENÉ BAND APP (i na pozadí, pokud ji telefon nechá běžet).
  * Úplně zavřená aplikace (hlavně iPhone) hovor nedostane – na to by byl potřeba push server. */
 import { connect, local, isConfigured, isEmulator, notifyEnabled, notifySupported, lockedReason } from './friends.js';
-import { ICE_SERVERS, TURN_CREDENTIALS_URL, MAX_PARTICIPANTS } from './rtc-config.js';
+import { ICE_SERVERS, STATIC_TURN_SERVERS, TURN_CREDENTIALS_URL, MAX_PARTICIPANTS } from './rtc-config.js';
 
-const RING_MS = 45e3, RING_WINDOW_MS = 60e3, CALL_TTL_MS = 3 * 3600e3, HEARTBEAT_MS = 60e3, STALE_MS = 150e3, LOST_MS = 60e3;
+const RING_MS = 45e3, RING_WINDOW_MS = 60e3, CALL_TTL_MS = 3 * 3600e3, HEARTBEAT_MS = 60e3, STALE_MS = 150e3, LOST_MS = 60e3,
+  NOCONN_WARN_MS = 20e3, NOCONN_END_MS = 50e3;
+const NOCONN_MSG = 'Spojení se nepodařilo – zkuste Wi-Fi.';   // síť nejspíš blokuje přímé spojení (bez TURN)
 const NOTIFY_TAG = 'bandapp-hovor';
 const $ = id => document.getElementById(id);
 const rnd = () => { const b = new Uint8Array(9); crypto.getRandomValues(b); return Array.from(b, x => x.toString(16).padStart(2, '0')).join(''); };
@@ -104,14 +106,21 @@ const live = c => c && c.status !== 'ended' && tms(c.expiresAt) > Date.now();
 
 async function iceServers() {
   if (isEmulator) return [];                                  // automatické testy: jen místní síť, žádné cizí servery
-  if (!TURN_CREDENTIALS_URL) return ICE_SERVERS;
+  const base = ICE_SERVERS.concat(Array.isArray(STATIC_TURN_SERVERS) ? STATIC_TURN_SERVERS : []);
+  if (!TURN_CREDENTIALS_URL) return base;                     // bez TURN: jen STUN (výchozí stav)
   if (V.iceCache && V.iceCache.until > Date.now()) return V.iceCache.list;
   try {
     const tok = await V.fb.auth.currentUser.getIdToken();
-    const r = await fetch(TURN_CREDENTIALS_URL, { headers: { Authorization: 'Bearer ' + tok } });
-    const j = await r.json(); const list = ICE_SERVERS.concat(Array.isArray(j.iceServers) ? j.iceServers : []);
+    const room = V.session ? V.session.roomId : '';
+    const ctl = typeof AbortController !== 'undefined' ? new AbortController() : null, tm = ctl && setTimeout(() => ctl.abort(), 4000);
+    const r = await fetch(TURN_CREDENTIALS_URL + (room ? (TURN_CREDENTIALS_URL.includes('?') ? '&' : '?') + 'room=' + encodeURIComponent(room) : ''),
+      { headers: { Authorization: 'Bearer ' + tok }, signal: ctl ? ctl.signal : undefined, cache: 'no-store' });
+    clearTimeout(tm);
+    if (!r.ok) throw new Error('turn ' + r.status);
+    const j = await r.json(), extra = Array.isArray(j.iceServers) ? j.iceServers : (j.iceServers && j.iceServers.urls ? [j.iceServers] : []);
+    const list = base.concat(extra);
     V.iceCache = { list, until: Date.now() + 10 * 60e3 }; return list;
-  } catch (e) { return ICE_SERVERS; }
+  } catch (e) { return base; }                                 // služba TURN nedostupná → hovor zkusí aspoň přímé spojení
 }
 
 /* ---------- média (kamera, mikrofon) ---------- */
@@ -301,7 +310,7 @@ async function joinCall(c, video) {
 async function enterSession(c, media, outgoing) {
   const s = V.session = {
     roomId: c.roomId, callId: c.id, call: c, kind: c.kind, mode: c.mode, participants: c.participants.slice(), outgoing,
-    stream: media.stream, cam: media.cam, mic: true, facing: 'user', epoch: rnd(), peers: new Map(), pcs: new Map(), seen: new Map(),
+    stream: media.stream, cam: media.cam, mic: true, facing: 'user', epoch: rnd(), peers: new Map(), pcs: new Map(), seen: new Map(), firstTry: new Map(), everConn: new Set(),
     sent: [], unsubs: [], started: Date.now(), anyJoined: false, ended: false, hiddenPaused: false, lastBeat: 0
   };
   buildCallUI(s);
@@ -349,10 +358,11 @@ const connected = p => p && p.pc && ['connected', 'completed'].includes(p.pc.ice
 async function newPc(s, uid) {
   const pc = new RTCPeerConnection({ iceServers: await iceServers(), bundlePolicy: 'max-bundle' });
   const entry = { pc, sid: '', remoteEpoch: '', stream: new MediaStream(), state: 'new', lostAt: 0, offerer: V.fb.uid < uid };
+  if (!s.firstTry.has(uid)) s.firstTry.set(uid, Date.now());
   pc.ontrack = e => { if (!entry.stream.getTracks().includes(e.track)) entry.stream.addTrack(e.track); e.track.onunmute = () => renderCall(s); e.track.onmute = () => renderCall(s); renderCall(s); };
   pc.oniceconnectionstatechange = () => {
     const st = pc.iceConnectionState; entry.state = st;
-    if (st === 'connected' || st === 'completed') { entry.lostAt = 0; entry.restarts = 0; }
+    if (st === 'connected' || st === 'completed') { entry.lostAt = 0; entry.restarts = 0; s.everConn.add(uid); if (s.noConnWarned) { s.noConnWarned = false; banner(s, 'Spojeno.', 2500); } }
     else if ((st === 'disconnected' || st === 'failed') && !entry.lostAt) entry.lostAt = Date.now();
     if (st === 'failed') reconnect(s, uid);
     renderCall(s);
@@ -437,10 +447,18 @@ function tick(s) {
   if (!s.anyJoined && now - s.started > RING_MS) { hangup(s, true, 'Nikdo to nevzal.'); return; }
   for (const [uid, e] of s.pcs) {
     if (!connected(e) && e.lostAt && now - e.lostAt > 6e3) reconnect(s, uid);
+    // Spojení se vůbec nenavázalo (signalizace funguje, ale síť nepustí obraz/zvuk – typicky bez TURN na mobilních datech):
+    // po 20 s jasná hláška, 1:1 hovor po 50 s skončí se stejnou hláškou (žádné nekonečné „připojuji…“).
+    const p = s.peers.get(uid);
+    if (!connected(e) && !s.everConn.has(uid) && p && p.state === 'joined' && navigator.onLine) {
+      const waited = now - (s.firstTry.get(uid) || now);
+      if (waited > NOCONN_WARN_MS && !s.noConnWarned) { s.noConnWarned = true; banner(s, NOCONN_MSG); }
+      if (waited > NOCONN_END_MS && s.mode === 'direct') { hangup(s, true, NOCONN_MSG); return; }
+    }
     const stale = now - (s.seen.get(uid) || 0) > STALE_MS;
     if (!connected(e) && e.lostAt && now - e.lostAt > LOST_MS && stale) {
       closePeer(s, uid); s.peers.set(uid, Object.assign({}, s.peers.get(uid), { state: 'left' }));
-      if (s.mode === 'direct') { hangup(s, true, 'Spojení se nepodařilo obnovit. Hovor skončil.'); return; }
+      if (s.mode === 'direct') { hangup(s, true, 'Spojení se nepodařilo obnovit. Hovor skončil. ' + NOCONN_MSG); return; }
     }
   }
   if (s.mode === 'direct' && s.anyJoined && !s.pcs.size && now - (s.seen.get(s.participants.find(u => u !== V.fb.uid)) || 0) > STALE_MS) { hangup(s, true, 'Spojení se nepodařilo obnovit. Hovor skončil.'); return; }

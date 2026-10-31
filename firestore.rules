@@ -1,6 +1,6 @@
 rules_version = '2';
 // BAND APP – Kamarádky (verze 1.1, PRODUKČNÍ projekt band-app-7c9ca): bezpečnostní pravidla Firestore.
-// 1.2.0 (TESTOVACÍ, zatím NEPUBLIKOVÁNO): přibyl JEN blok /rooms/{roomId}/calls (videochat) + 3 pomocné funkce.
+// 1.2.0: přibyl JEN blok /rooms/{roomId}/calls (videochat) + 3 pomocné funkce.
 // Stávající pravidla (pozvánky, členky, zprávy, záloha) jsou beze změny.
 // Proti 1p (= otestovaná 1h) přibyla JEN větev B u /rooms/{roomId}/members/{uid} update: změna vlastní přezdívky.
 // Bez souhlasu (pole „consent“ nové záznamy mít NESMÍ). Dotaz na VLASTNÍ členství přes všechny skupiny
@@ -255,7 +255,7 @@ service cloud.firestore {
         allow delete: if isApproved(roomId) && (resource.data.uid == me() || isOwner(roomId));
       }
 
-      // ---------- 1.2.0: VIDEOCHAT – jen signalizace WebRTC (TESTOVACÍ VERZE) ----------
+      // ---------- 1.2.0: VIDEOCHAT – jen signalizace WebRTC ----------
       // Ukládá se JEN: kdo koho volá (uid, přezdívka), druh hovoru, stav, a technický popis spojení (SDP),
       // který příjemkyně po zpracování hned smaže. Obraz ani zvuk se NIKDY neukládá ani nenahrává
       // (jde přímo mezi telefony, šifrovaně DTLS-SRTP). Žádný jiný (rodičovský, správcovský) přístup v aplikaci.
