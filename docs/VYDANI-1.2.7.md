@@ -58,3 +58,11 @@ v `_tools/turn-worker/README.md` – vyžaduje účet Cloudflare (založí si ho
 media_2way.py (bug na 1.2.6: 13/13; fixed: obousměrný přenos v obou rolích + diagnostika během hovoru, souhrn
 posledního hovoru, zablokované přehrávání → tlačítko, simulované selhání ICE → jasná hláška a „kandidáti místní 0“)
 + všechny dosavadní sady (pravidla, upgrade 1.1.3/1.2.6 → 1.2.7 a návrat, přihlášení, obnova, hovory, Firefox).
+
+### Výsledky (31. 10. 2026)
+pravidla 73/73, 36/36, 19/19, prod-compat 39/39; turn-worker 13/13; recovery_auth bug 17/17 + fixed 44/44;
+media_2way bug (1.2.6) 13/13, fixed 33/33 (6 běhů; 1× v plné sadě 31/33 – v simulaci selhání ICE hovor skončil
+po ~19 s místo ukázání hlášky; 5 dalších běhů vč. běhu pod plnou zátěží CPU 33/33, příčinu se nepodařilo
+zopakovat); join_page_calls bug 18/18 + fixed 27/27; vc_calls 44/44; upgrade_rollback 1.1.3 → 1.2.7 → návrat 50/50;
+real_flow, cold_start, identity, transfer_old, Firefox (15/15, 2 INFO) – vše PASS. WebKit v tomto prostředí není.
+**Skutečné telefony, iOS Safari ani mobilní sítě testovány NEBYLY.**
