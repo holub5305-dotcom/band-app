@@ -14,7 +14,7 @@ const RING_MS = 45e3, RING_WINDOW_MS = 60e3, CALL_TTL_MS = 3 * 3600e3, HEARTBEAT
   NOCONN_WARN_MS = 20e3, NOCONN_END_MS = 50e3;
 const NOCONN_MSG = 'Spojení se nepodařilo – zkuste Wi-Fi.';   // síť nejspíš blokuje přímé spojení (bez TURN)
 const NOTIFY_TAG = 'bandapp-hovor';
-export const APP_VERSION = '1.2.4';
+export const APP_VERSION = '1.2.5';
 const RETRY_MS = 15e3, START_CHECK_MS = 15e3;
 const $ = id => document.getElementById(id);
 const rnd = () => { const b = new Uint8Array(9); crypto.getRandomValues(b); return Array.from(b, x => x.toString(16).padStart(2, '0')).join(''); };
@@ -75,7 +75,7 @@ function injectStyle() {
 .vc-tile .vc-label{position:absolute;left:10px;bottom:10px;background:#000a;border-radius:999px;padding:4px 10px;font-size:14px;display:flex;gap:6px;align-items:center;max-width:calc(100% - 20px)}
 .vc-tile .vc-label .vc-ic{width:16px;height:16px;color:#ff5a66}
 .vc-tile.connecting .vc-avbig{animation:vcPulse 1.6s ease-in-out infinite}
-.vc-tile.connecting::after{content:'Připojuji…';position:absolute;top:58%;margin-top:clamp(40px,12vw,90px);font-size:14px;color:#e8c4c8;animation:vcFade 1.6s ease-in-out infinite}
+.vc-tile.connecting::after{content:attr(data-st);position:absolute;top:58%;margin-top:clamp(40px,12vw,90px);font-size:14px;color:#e8c4c8;animation:vcFade 1.6s ease-in-out infinite}
 @keyframes vcPulse{0%,100%{box-shadow:0 0 0 3px #2a0508,0 0 0 5px #5c1219}50%{box-shadow:0 0 0 3px #2a0508,0 0 0 14px #b3001b55}}
 @keyframes vcFade{0%,100%{opacity:.45}50%{opacity:1}}
 #vcCall .vc-one{position:absolute;inset:0}#vcCall .vc-one>.vc-tile.main{position:absolute;inset:0;border-radius:0;border:0}
@@ -89,6 +89,7 @@ function injectStyle() {
 #vcCall .vc-list{position:absolute;right:10px;top:calc(62px + env(safe-area-inset-top));z-index:7;background:#141414;border:1px solid #5c1219;border-radius:16px;padding:10px 14px;min-width:220px;max-width:90vw;box-shadow:0 10px 30px #000c}
 #vcCall .vc-list ul{list-style:none;margin:6px 0 0;padding:0;display:grid;gap:6px}#vcCall .vc-list li{display:flex;justify-content:space-between;gap:12px}#vcCall .vc-list small{color:#c0c0c8}
 #vcCall .vc-tapsound{position:absolute;left:50%;bottom:120px;transform:translateX(-50%);z-index:6;background:#b3001b;color:#fff;border:0;border-radius:12px;padding:12px 16px;font:inherit}
+.vc-toast{position:fixed;left:50%;transform:translateX(-50%);bottom:calc(18px + env(safe-area-inset-bottom));z-index:10001;background:#2a0508;color:#ffd6d9;border:1px solid #e0202f;border-radius:14px;padding:10px 14px;font:14px system-ui,Arial;max-width:92vw;text-align:center}
 #vcIncoming{align-items:center;justify-content:center;gap:18px;background:radial-gradient(circle at 50% 30%,#3a070c,#050505 65%);text-align:center;padding:24px}
 #vcIncoming .vc-avbig{width:132px;height:132px;border-radius:50%;display:grid;place-items:center;font-size:56px;font-weight:bold;background:radial-gradient(circle at 30% 25%,#e0202f,#3a070c 72%);animation:vcPulse 1.4s ease-in-out infinite}
 #vcIncoming h2{margin:0;font-size:28px;word-break:break-word}#vcIncoming p{margin:0;color:#e8c4c8}
@@ -102,7 +103,8 @@ function injectStyle() {
 /* ---------- stav ---------- */
 const V = { fb: null, uid: null, root: null, roomId: null, members: new Map(), memUnsub: null, callSubs: new Map(), calls: new Map(), handled: new Set(), session: null, incoming: null, err: '', iceCache: null,
   my: new Map(), mySubs: new Map(), retry: new Map(), listen: new Map(), lastErr: null, lastSnap: 0, skew: 0, starting: false, started: false, diagEl: null,
-  base: null, authHooked: false, srv: new Map(), srvState: 'neznámé', srvUnsub: null, names: new Map(), code: '' };
+  base: null, authHooked: false, srv: new Map(), srvState: 'neznámé', srvUnsub: null, names: new Map(), code: '',
+  codes: new Map(), page: '', lastOut: null, lastIn: null };
 /* 1.2.1: o členství rozhoduje SERVER (vlastní záznam rooms/{id}/members/{uid}), ne místní kopie role v localStorage.
  * (Místní role se v 1.2.0 obnovovala jen při otevření skupiny v Kamarádkách – čerstvě schválená členka proto
  * příchozí hovory vůbec neposlouchala.) Dokud server neodpoví, použije se místní role jen pro zobrazení. */
@@ -118,6 +120,16 @@ const errCode = e => String((e && e.code) || (e && e.name) || 'neznámá').repla
 function noteErr(where, e) { V.lastErr = { where, code: errCode(e), at: Date.now() }; }
 const myNick = roomId => { const m = V.members.get(roomId) || new Map(), me = V.fb && m.get(V.fb.uid); return (me && me.nick) || local.nick() || 'Já'; };
 const nickOf = (roomId, uid) => { const m = (V.members.get(roomId) || new Map()).get(uid); return (m && m.nick) || 'Kamarádka'; };
+/* 1.2.5: kód účtu (prvních 6 znaků SHA-256 z uid – stejný jako v Kamarádkách) i u kontaktů a na obrazovce hovoru,
+ * aby šlo poznat, KTERÝ účet se volá (např. dva záznamy „Táta…“). Počítá se jen v telefonu. */
+function codeOf(uid) {
+  if (!uid) return '';
+  if (V.codes.has(uid)) return V.codes.get(uid) || '';
+  V.codes.set(uid, ''); deviceCode(uid).then(c => { V.codes.set(uid, c || ''); render(); if (V.session) renderCall(V.session); }).catch(() => { });
+  return '';
+}
+/* 1.2.5: průběh posledního odchozího / příchozího hovoru jen pro Diagnostiku (v paměti, nikam se neposílá). */
+function noteCall(rec, patch) { if (rec) Object.assign(rec, patch); }
 const tms = t => t && t.toMillis ? t.toMillis() : 0;
 const live = c => c && c.status !== 'ended' && tms(c.expiresAt) > nowS();
 
@@ -184,8 +196,14 @@ async function endCall(roomId, callId) { try { await F().updateDoc(callRef(roomI
 
 /* ---------- spuštění ---------- */
 export async function initVideochat() {
-  const root = $('videochatApp'); if (!root) return;
-  injectStyle(); root.classList.add('vc'); V.root = root;
+  // 1.2.5: naslouchání příchozím hovorům běží i na stránce pozvánky (join.html). Nainstalovaná BAND APP tam po
+  // otevření pozvánky zůstane i po schválení (ukazuje chat) – v 1.2.4 tam hovory vůbec nezvonily.
+  // Sekce VIDEOCHAT (seznam, diagnostika) se kreslí jen v hlavní aplikaci (#videochatApp).
+  if (V.inited) return; V.inited = true;
+  const root = $('videochatApp');
+  injectStyle();
+  if (root) { root.classList.add('vc'); V.root = root; }
+  V.page = root ? 'hlavní aplikace' : 'stránka pozvánky (join.html)';
   render();
   // Naslouchání příchozím hovorům běží v celé aplikaci (ne jen v sekci VIDEOCHAT) a spustí se samo,
   // jakmile je v zařízení skupina – i když se člověk do skupiny přidá nebo je schválen až po otevření aplikace.
@@ -377,7 +395,10 @@ async function onCallDoc(c, fresh) {
     if (same) return;
     quickPeer(c.roomId, c.id, 'busy').catch(() => { }); return;       // jsem v jiném hovoru → „obsazeno“
   }
-  V.incoming = c; showIncoming(c);
+  V.incoming = c;
+  V.lastIn = { at: Date.now(), callId: c.id, code: V.codes.get(c.createdBy) || '', phase: 'zazvonil', result: 'zvoní' };
+  if (!V.lastIn.code) { const rec = V.lastIn; deviceCode(c.createdBy).then(x => { rec.code = x; }).catch(() => { }); }
+  showIncoming(c);
 }
 function showIncoming(c) {
   closeIncoming(true);
@@ -393,11 +414,12 @@ function showIncoming(c) {
   document.body.append(el);
   ring(true);
   if (document.visibilityState === 'hidden') systemNotify();
-  V.incomingTimer = setTimeout(() => { if (V.incoming && V.incoming.id === c.id) { V.incoming = null; closeIncoming(); render(); } }, Math.max(RING_MS, RING_WINDOW_MS - (nowS() - tms(c.createdAt))));
+  V.incomingTimer = setTimeout(() => { if (V.incoming && V.incoming.id === c.id) { V.incoming = null; if (V.lastIn && V.lastIn.callId === c.id) V.lastIn.result = 'nepřijato (vypršelo)'; closeIncoming(); render(); } }, Math.max(RING_MS, RING_WINDOW_MS - (nowS() - tms(c.createdAt))));
 }
 function closeIncoming(keep) { const e = $('vcIncoming'); if (e) e.remove(); ring(false); clearTimeout(V.incomingTimer); if (!keep) closeNotification(); }
 async function declineCall(c) {
   V.incoming = null; closeIncoming();
+  if (V.lastIn && V.lastIn.callId === c.id) V.lastIn.result = 'odmítnuto';
   try { await quickPeer(c.roomId, c.id, 'declined'); } catch (e) { }
   render();
 }
@@ -446,6 +468,7 @@ async function startCall(roomId, others, video) {
   try { await F().setDoc(ref, call); }
   catch (e) { stopStream(media.stream); V.err = /permission/.test(e && e.code) ? 'Hovor nejde zahájit – volat smí jen schválené členky skupiny (a jen schváleným členkám).' : 'Hovor se nepodařilo zahájit. Zkontroluj internet.'; render(); return; }
   V.handled.add(ref.id);
+  V.lastOut = { at: Date.now(), callId: ref.id, code: others.length === 1 ? (V.codes.get(others[0]) || await deviceCode(others[0]).catch(() => '')) : others.length + ' účastnice', phase: 'vyzvání', result: 'probíhá' };
   await enterSession(Object.assign({ id: ref.id, roomId }, call, { createdAt: F().Timestamp.now() }), media, true);
 }
 async function joinCall(c, video) {
@@ -463,6 +486,9 @@ async function enterSession(c, media, outgoing) {
     stream: media.stream, cam: media.cam, mic: true, facing: 'user', epoch: rnd(), peers: new Map(), pcs: new Map(), seen: new Map(), firstTry: new Map(), everConn: new Set(),
     sent: [], unsubs: [], started: Date.now(), anyJoined: false, ended: false, hiddenPaused: false, lastBeat: 0
   };
+  s.diag = outgoing ? (V.lastOut && V.lastOut.callId === c.id ? V.lastOut : null)
+    : (V.lastIn && V.lastIn.callId === c.id ? V.lastIn : (V.lastIn = { at: Date.now(), callId: c.id, code: '', phase: 'připojení k hovoru', result: 'probíhá' }));
+  if (!outgoing) { noteCall(s.diag, { phase: 'přijato', result: 'probíhá' }); if (!s.diag.code) deviceCode(c.createdBy).then(x => { s.diag.code = x; }).catch(() => { }); }
   buildCallUI(s);
   try { navigator.mediaDevices.enumerateDevices().then(d => { s.multiCam = d.filter(x => x.kind === 'videoinput').length > 1; renderCall(s); }).catch(() => { }); } catch (e) { }
   if (media.note) banner(s, media.note, 7000);
@@ -492,11 +518,13 @@ function onPeers(s) {
     const p = s.peers.get(uid);
     if (!p) continue;
     if (p.state === 'joined') {
+      if (!s.anyJoined) noteCall(s.diag, { phase: 'přijato' });
       s.anyJoined = true;
+      if (!s.firstTry.has(uid)) s.firstTry.set(uid, Date.now());   // 1.2.5: odtud se počítá limit „Spojení se nepodařilo“
       const cur = s.pcs.get(uid);
       if (V.fb.uid < uid && (!cur || cur.remoteEpoch !== p.epoch)) makeOffer(s, uid, p.epoch);
     } else closePeer(s, uid);
-    if (s.mode === 'direct' && (p.state === 'declined' || p.state === 'busy')) { banner(s, p.state === 'busy' ? 'Kamarádka je zrovna v jiném hovoru.' : 'Hovor byl odmítnut.'); setTimeout(() => hangup(s, true), 1800); }
+    if (s.mode === 'direct' && (p.state === 'declined' || p.state === 'busy')) { noteCall(s.diag, { result: p.state === 'busy' ? 'obsazeno' : 'odmítnuto' }); banner(s, p.state === 'busy' ? 'Kamarádka je zrovna v jiném hovoru.' : 'Hovor byl odmítnut.'); setTimeout(() => hangup(s, true), 1800); }
     else if (s.mode === 'direct' && p.state === 'left' && s.anyJoined) hangup(s, true, 'Hovor skončil.');
   }
   if (s.mode === 'group' && s.anyJoined && !othersAlive(s).length && [...s.peers.values()].every(p => p.state !== 'joined')) hangup(s, true, 'Všechny odešly – hovor skončil.');
@@ -512,6 +540,7 @@ async function newPc(s, uid) {
   pc.ontrack = e => { if (!entry.stream.getTracks().includes(e.track)) entry.stream.addTrack(e.track); e.track.onunmute = () => renderCall(s); e.track.onmute = () => renderCall(s); renderCall(s); };
   pc.oniceconnectionstatechange = () => {
     const st = pc.iceConnectionState; entry.state = st;
+    noteCall(s.diag, Object.assign({ phase: 'ICE: ' + st }, (st === 'connected' || st === 'completed') ? { result: 'spojeno' } : {}));
     if (st === 'connected' || st === 'completed') { entry.lostAt = 0; entry.restarts = 0; s.everConn.add(uid); if (s.noConnWarned) { s.noConnWarned = false; banner(s, 'Spojeno.', 2500); } }
     else if ((st === 'disconnected' || st === 'failed') && !entry.lostAt) entry.lostAt = Date.now();
     if (st === 'failed') reconnect(s, uid);
@@ -550,7 +579,8 @@ async function makeOffer(s, uid, epoch) {
     await gathered(entry.pc);
     if (s.ended || s.pcs.get(uid) !== entry) return;
     await sendSignal(s, uid, 'offer', entry.sid, entry.pc.localDescription.sdp);
-  } catch (e) { entry.lostAt = entry.lostAt || Date.now(); }
+    if (!connected(entry)) noteCall(s.diag, { phase: 'nabídka odeslána' });
+  } catch (e) { noteCall(s.diag, { phase: 'nabídka selhala (' + errCode(e) + ')' }); entry.lostAt = entry.lostAt || Date.now(); }
   renderCall(s);
 }
 async function onSignal(s, id, d) {
@@ -567,9 +597,10 @@ async function onSignal(s, id, d) {
       await gathered(entry.pc);
       if (s.ended || s.pcs.get(d.from) !== entry) return;
       await sendSignal(s, d.from, 'answer', d.sid, entry.pc.localDescription.sdp);
+      if (!connected(entry)) noteCall(s.diag, { phase: 'nabídka přijata, odpověď odeslána' });
     } else if (d.type === 'answer') {
       const entry = s.pcs.get(d.from);
-      if (entry && entry.sid === d.sid && entry.pc.signalingState === 'have-local-offer') await entry.pc.setRemoteDescription({ type: 'answer', sdp: d.sdp });
+      if (entry && entry.sid === d.sid && entry.pc.signalingState === 'have-local-offer') { await entry.pc.setRemoteDescription({ type: 'answer', sdp: d.sdp }); if (!connected(entry)) noteCall(s.diag, { phase: 'odpověď přijata' }); }
     }
   } catch (e) { }
   renderCall(s);
@@ -594,17 +625,26 @@ function tick(s) {
   if (s.ended) return;
   const now = Date.now();
   if (now - s.lastBeat > HEARTBEAT_MS) { s.lastBeat = now; writePeer(s, 'joined').catch(() => { }); }   // „jsem tu“ (1× za minutu)
-  if (!s.anyJoined && now - s.started > RING_MS) { hangup(s, true, 'Nikdo to nevzal.'); return; }
-  for (const [uid, e] of s.pcs) {
-    if (!connected(e) && e.lostAt && now - e.lostAt > 6e3) reconnect(s, uid);
-    // Spojení se vůbec nenavázalo (signalizace funguje, ale síť nepustí obraz/zvuk – typicky bez TURN na mobilních datech):
-    // po 20 s jasná hláška, 1:1 hovor po 50 s skončí se stejnou hláškou (žádné nekonečné „připojuji…“).
-    const p = s.peers.get(uid);
+  if (!s.anyJoined && now - s.started > RING_MS) {
+    const c = s.mode === 'direct' ? codeOf(s.participants.find(u => u !== V.fb.uid)) : '';
+    noteCall(s.diag, { result: 'nikdo nepřijal' });
+    hangup(s, true, 'Nikdo to nevzal. Hovor zazvoní jen na telefonu, kde je přihlášený účet' + (c ? ' ' + c : '') + ' a BAND APP je otevřená.'); return;
+  }
+  // Spojení se vůbec nenavázalo (signalizace funguje, ale síť nepustí obraz/zvuk – typicky bez TURN na mobilních datech):
+  // po 20 s jasná hláška, 1:1 hovor po 50 s skončí se stejnou hláškou (žádné nekonečné „připojuji…“).
+  // 1.2.5: platí pro KAŽDOU připojenou účastnici – i když nabídka spojení vůbec nedorazila (dřív se hlídaly jen
+  // existující spojení, takže přijímající strana bez nabídky mohla „připojovat“ donekonečna).
+  for (const uid of s.participants) {
+    if (uid === V.fb.uid) continue;
+    const p = s.peers.get(uid), e = s.pcs.get(uid);
     if (!connected(e) && !s.everConn.has(uid) && p && p.state === 'joined' && navigator.onLine) {
       const waited = now - (s.firstTry.get(uid) || now);
       if (waited > NOCONN_WARN_MS && !s.noConnWarned) { s.noConnWarned = true; banner(s, NOCONN_MSG); }
-      if (waited > NOCONN_END_MS && s.mode === 'direct') { hangup(s, true, NOCONN_MSG); return; }
+      if (waited > NOCONN_END_MS && s.mode === 'direct') { noteCall(s.diag, { result: 'spojení se nenavázalo (' + (e ? 'ICE ' + e.pc.iceConnectionState : 'nabídka nedorazila') + ')' }); hangup(s, true, NOCONN_MSG); return; }
     }
+  }
+  for (const [uid, e] of s.pcs) {
+    if (!connected(e) && e.lostAt && now - e.lostAt > 6e3) reconnect(s, uid);
     const stale = now - (s.seen.get(uid) || 0) > STALE_MS;
     if (!connected(e) && e.lostAt && now - e.lostAt > LOST_MS && stale) {
       closePeer(s, uid); s.peers.set(uid, Object.assign({}, s.peers.get(uid), { state: 'left' }));
@@ -642,7 +682,13 @@ function teardown(s, msg) {
   const ui = $('vcCall'); if (ui) ui.remove();
   if (V.session === s) V.session = null;
   V.err = msg || ''; render();
+  noteCall(s.diag, s.diag && s.diag.result === 'probíhá' ? { result: msg ? msg.replace(/\.$/, '') : 'ukončeno' } : {});
+  if (!V.root && msg) toast(msg);                                 // stránka pozvánky nemá sekci VIDEOCHAT → krátká hláška
   setTimeout(() => sweep(s.roomId), 3000);                       // ukončený hovor se z databáze smaže
+}
+function toast(text) {
+  const old = document.querySelector('.vc-toast'); if (old) old.remove();
+  const t = h('div', { class: 'vc-toast', role: 'status', id: 'vcToast', text }); document.body.append(t); setTimeout(() => t.remove(), 12e3);
 }
 function onVisibility() {
   const s = V.session; if (!s || s.ended) return;
@@ -727,7 +773,8 @@ function renderCall(s) {
   const me = V.fb.uid, others = s.participants.filter(u => u !== me);
   const active = others.filter(u => (s.peers.get(u) || {}).state === 'joined');
   const anyConn = [...s.pcs.values()].some(connected);
-  $('vcTitle').textContent = s.mode === 'direct' ? nickOf(s.roomId, others[0]) : 'Skupinový hovor · ' + (active.length + 1) + '/' + s.participants.length;
+  const oc = s.mode === 'direct' ? codeOf(others[0]) : '';
+  $('vcTitle').textContent = s.mode === 'direct' ? nickOf(s.roomId, others[0]) + (oc ? ' · kód ' + oc : '') : 'Skupinový hovor · ' + (active.length + 1) + '/' + s.participants.length;
   $('vcState').textContent = (s.kind === 'video' ? '📹 Videohovor' : '📞 Hlasový hovor') + ' · ' + (anyConn ? 'spojeno' : (s.anyJoined ? 'připojuji…' : (s.outgoing ? 'vyzvání…' : 'připojuji…'))) + (navigator.onLine ? '' : ' · bez internetu');
   const mic = $('vcMic'), cam = $('vcCam'), hang = $('vcHang'), flip = $('vcFlip');
   mic.replaceChildren(icon(s.mic ? 'mic' : 'micOff')); mic.classList.toggle('off', !s.mic); mic.setAttribute('aria-label', s.mic ? 'Vypnout mikrofon' : 'Zapnout mikrofon'); mic.title = mic.getAttribute('aria-label'); mic.setAttribute('aria-pressed', String(!s.mic));
@@ -745,6 +792,9 @@ function renderCall(s) {
     const showVid = !!(p.cam && vt);
     setStream(t.v, st || null); t.v.hidden = !showVid; t.av.hidden = showVid; t.av.textContent = initial(p.nick || nickOf(s.roomId, uid));
     t.el.classList.toggle('connecting', !self && !connected(e));
+    // 1.2.5: poctivý stav – dokud volaná hovor nepřijala, „Vyzvání…“ (dřív tu bylo „Připojuji…“ i při vyzvánění).
+    const ps = !self && s.peers.get(uid);
+    t.el.dataset.st = self || connected(e) ? '' : ps && ps.state === 'joined' ? 'Připojuji…' : ps && STATE_TXT[ps.state] ? STATE_TXT[ps.state] : (s.outgoing ? 'Vyzvání…' : 'Připojuji…');
     t.el.classList.toggle('back', self && s.facing !== 'user');
     t.lab.replaceChildren(p.mic === false ? icon('micOff') : '', document.createTextNode((self ? 'Ty' : (p.nick || nickOf(s.roomId, uid))) + (self || connected(e) ? '' : (e && e.lostAt ? ' · obnovuji…' : ''))));
   }
@@ -765,7 +815,7 @@ function renderCall(s) {
   if (s.showList) {
     if (!list) { list = h('div', { class: 'vc-list', id: 'vcList' }); ui.append(list); }
     list.replaceChildren(h('b', { text: 'Účastnice hovoru' }), h('ul', {}, h('li', {}, h('span', { text: myNick(s.roomId) + ' (ty)' }), h('small', { text: 'v hovoru' })),
-      others.map(u => { const p = s.peers.get(u); return h('li', { 'data-uid': u }, h('span', { text: (p && p.nick) || nickOf(s.roomId, u) }), h('small', { text: p ? (p.state === 'joined' && !connected(s.pcs.get(u)) ? 'připojuje se…' : STATE_TXT[p.state] || '') : 'vyzvání…' })); })));
+      others.map(u => { const p = s.peers.get(u); return h('li', { 'data-uid': u }, h('span', { text: ((p && p.nick) || nickOf(s.roomId, u)) + (codeOf(u) ? ' · ' + codeOf(u) : '') }), h('small', { text: p ? (p.state === 'joined' && !connected(s.pcs.get(u)) ? 'připojuje se…' : STATE_TXT[p.state] || '') : 'vyzvání…' })); })));
   } else if (list) list.remove();
 }
 function makeDraggable(el) {
@@ -839,7 +889,8 @@ function render() {
   const busy = !!V.session;
   kids.push(h('ul', { class: 'vc-people', id: 'vcPeopleList' }, people.map(m => h('li', { 'data-uid': m.uid },
     h('input', { type: 'checkbox', class: 'vc-pick', 'aria-label': 'Vybrat do skupinového hovoru: ' + m.nick, checked: picked.has(m.uid), onchange: e => { if (e.target.checked) { if (picked.size >= MAX_PARTICIPANTS - 1) { e.target.checked = false; V.err = 'Skupinový hovor je nejvýš pro ' + MAX_PARTICIPANTS + ' (ty + 3 kamarádky).'; render(); return; } picked.add(m.uid); } else picked.delete(m.uid); V.err = ''; render(); } }),
-    h('span', { class: 'vc-av', text: initial(m.nick) }), h('span', { class: 'vc-name', text: m.nick }),
+    h('span', { class: 'vc-av', text: initial(m.nick) }), h('span', { class: 'vc-who', style: 'flex:1;min-width:0' }, h('span', { class: 'vc-name', style: 'display:block', text: m.nick }),
+      h('small', { class: 'vc-code', 'data-code': codeOf(m.uid), style: 'display:block;color:#c0c0c8;font-size:12px', text: codeOf(m.uid) ? 'kód účtu ' + codeOf(m.uid) : '' })),
     h('span', { class: 'vc-act' },
       h('button', { type: 'button', 'data-act': 'video', 'aria-label': 'Videohovor s ' + m.nick, title: 'Videohovor', disabled: busy, onclick: () => startCall(roomId, [m.uid], true) }, icon('cam')),
       h('button', { type: 'button', 'data-act': 'audio', 'aria-label': 'Hlasový hovor s ' + m.nick, title: 'Hlasový hovor', disabled: busy, onclick: () => startCall(roomId, [m.uid], false) }, icon('phone')))))));
@@ -848,6 +899,7 @@ function render() {
     h('button', { type: 'button', class: 'vc-callbtn primary', id: 'vcGroupVideo', disabled: busy || sel.length < 2, onclick: () => startCall(roomId, sel, true) }, icon('cam'), 'Skupinový videohovor'),
     h('button', { type: 'button', class: 'vc-callbtn', id: 'vcGroupAudio', disabled: busy || sel.length < 2, onclick: () => startCall(roomId, sel, false) }, icon('phone'), 'Skupinový hlasový')));
   kids.push(h('p', { class: 'note' }, 'Pro skupinový hovor zaškrtni 2–3 kamarádky (max. ' + MAX_PARTICIPANTS + ' včetně tebe).'));
+  kids.push(h('p', { class: 'note', id: 'vcCodeHint' }, 'Kód účtu u jména je stejný jako v Kamarádkách → Můj účet na jejím telefonu. Tvůj kód: ' + (V.code || '…') + '.'));
   kids.push(h('p', { class: 'note' }, 'Hovor zazvoní, jen když má kamarádka BAND APP otevřenou (i na pozadí, pokud ji telefon nechá běžet). Úplně zavřená aplikace – hlavně na iPhonu – hovor nedostane.'));
   put(root, kids);
 }
@@ -864,6 +916,7 @@ function diagEl() {
   el.addEventListener('toggle', () => { clearInterval(V.diagTimer); if (el.open) { fillDiag(); V.diagTimer = setInterval(fillDiag, 2000); } });
   return (V.diagEl = el);
 }
+const callRow = r => r ? 'před ' + ago(r.at) + ' · kód ' + (r.code || '…') + ' · ' + r.phase + ' · ' + r.result : 'žádný (od otevření aplikace)';
 const ago = t => t ? Math.max(0, Math.round((Date.now() - t) / 1000)) + ' s' : '–';
 function authText() {
   if (lockedReason()) return 'odhlášeno (zadej obnovovací kód v Kamarádkách)';
@@ -899,6 +952,9 @@ async function fillDiag() {
     ['Příchozí hovory čekající', String(pendingIn) + (V.incoming ? ' (právě zvoní)' : '')],
     ['Poslední chyba', e ? e.code + ' – ' + e.where + ', před ' + ago(e.at) : 'žádná'],
     ['Hodiny telefonu', Math.abs(V.skew) > 2000 ? 'odchylka cca ' + Math.round(V.skew / 1000) + ' s (aplikace ji vyrovná)' : 'v pořádku'],
+    ['Stránka', V.page || '–'],
+    ['Poslední odchozí hovor', callRow(V.lastOut)],
+    ['Poslední příchozí hovor', callRow(V.lastIn)],
     ['Upozornění', typeof Notification === 'undefined' ? 'nepodporováno' : Notification.permission === 'granted' ? 'povolena' : 'nepovolena']
   ];
   el.querySelector('#vcDiagBody').replaceChildren(h('dl', {}, ...rows.flatMap(([k, v]) => [h('dt', { text: k }), h('dd', { text: v })])),
