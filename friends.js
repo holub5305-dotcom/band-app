@@ -1086,6 +1086,15 @@ async function initIndex(root) {
     if (!rooms.length) return createForm();
     showRoom(rooms.some(r => r.id === S.roomId) ? S.roomId : rooms[rooms.length - 1].id);
   }
+  /* 1.2.4: přihlášený účet bez skupiny (typicky nainstalovaná aplikace) – pozvánku vložit sem, ne klepnout v Safari. */
+  function inviteJoinBox() {
+    const inp = h('input', { type: 'url', id: 'frJoinLinkIn', placeholder: 'Vlož odkaz pozvánky (…join.html#t=…)', autocomplete: 'off', 'aria-label': 'Odkaz pozvánky' });
+    const e = h('div', { class: 'err', role: 'alert', hidden: true });
+    const go = btn('primary', '✉️ Otevřít pozvánku tady', () => { const mm = /[#&]t=([A-Za-z0-9_-]{22})(?![A-Za-z0-9_-])/.exec(inp.value || ''); if (!mm) { e.hidden = false; e.textContent = 'Tohle nevypadá jako odkaz pozvánky BAND APP.'; return; } location.href = 'join.html' + location.search + '#t=' + mm[1]; }, { id: 'frJoinLinkGo' });
+    return h('div', { class: 'box', id: 'frJoinBox', 'data-state': 'join-or-transfer' }, h('strong', { text: '📩 Mám pozvánku / nový účet – požádat o převod' }),
+      h('p', { class: 'note', text: 'Dostala jsi pozvánku do skupiny? Nebo už ve skupině jsi, ale s jiným přihlášením (jiný telefon, Safari, smazaná data)? Zkopíruj odkaz pozvánky a vlož ho SEM – klepnutí na odkaz ve zprávě ho na iPhonu otevře v Safari, což je jiné přihlášení. Zakladatelka pak tvoje členství převede na tento účet (podle kódu účtu).' }),
+      inp, e, h('div', { class: 'row' }, go));
+  }
   function haveCodeBtn() {
     const b = btn('secondary', '♻️ Mám obnovovací kód', () => restoreScreen('restore'), { id: 'frHaveCode', hidden: true });
     recoveryVerified().then(v => { b.hidden = !v; }); return h('div', { class: 'row' }, b);
@@ -1103,7 +1112,7 @@ async function initIndex(root) {
       try { local.setNick(n); const room = await createRoom(r, n); showRoom(room.id); } catch (e) { showErr(err, e); go.disabled = false; }
     }, { id: 'frCreate' });
     const panel = accountPanel(() => open(), afterSignOut);
-    fill(root, codeReminder(panel), h('h3', { text: 'Založ si soukromou skupinu' }),
+    fill(root, codeReminder(panel), inviteJoinBox(), h('h3', { text: 'Založ si soukromou skupinu' }),
       h('label', { for: 'frNick', text: 'Přezdívka (ne celé jméno)' }), nick, h('label', { for: 'frRoomName', text: 'Název skupiny' }), name, err, h('div', { class: 'row' }, go, cancelable && btn('secondary', 'Zpět', () => open())),
       ...privacyLines('Založením skupiny přijímáš pravidla skupiny.'),
       recoveryNote('Máš už účet z jiného zařízení?'), haveCodeBtn(), panel);
@@ -1273,6 +1282,31 @@ async function initIndex(root) {
               try { await transferMember(roomId, sel.value, m.uid, code.value); } catch (e) { b.disabled = false; showErr(terr, e); }
             }, { 'data-act': 'transfer-go' })));
         }
+        // 1.2.4: převod i ze STARÉHO schváleného záznamu (zakladatelka → „Převést na nový účet…“). Nový účet musí
+        // mít čekající žádost (pozvánka otevřená v nové aplikaci); kód z jejího telefonu se opisuje osobně.
+        if (mgr && m.status === 'approved' && m.uid !== ownerUid && m.uid !== meUid) {
+          const obox = h('div', { class: 'box', 'data-move-box': '1', hidden: true });
+          add(act, btn('secondary', '🔁 Převést na nový účet…', () => { obox.hidden = !obox.hidden; }, { 'data-act': 'move-open' }));
+          const reqs = S.members.filter(x => x.status === 'pending' && x.uid !== m.uid);
+          const who = m.nick || 'Kamarádka';
+          if (!reqs.length) {
+            fill(obox, h('p', { class: 'note', 'data-move-none': '1', text: 'Zatím tu není žádná nová žádost, na kterou jde členství „' + who + '“ převést. Postup: 1) Klepni nahoře na „➕ Pozvat kamarádku“ a pošli „' + who + '“ NOVOU pozvánku. 2) „' + who + '“ odkaz zkopíruje a vloží v NAINSTALOVANÉ BAND APP (Kamarádky → „Mám pozvánku / nový účet – požádat o převod“), zadá přezdívku a klepne na „Požádat o převod“. (Klepnutí na odkaz ve zprávě ho na iPhonu otevře v Safari – to je jiné přihlášení.) 3) Pak tady znovu otevři „🔁 Převést na nový účet…“, vyber žádost a opiš kód účtu z jejího telefonu.' }));
+          } else {
+            const osel = h('select', { 'data-move-to': '1', 'aria-label': 'Nová žádost' }, ...reqs.slice().sort((a, b) => (nickKey(b.nick) === nickKey(m.nick)) - (nickKey(a.nick) === nickKey(m.nick))).map(x => {
+              const o = h('option', { value: x.uid, text: (x.nick || 'Kamarádka') + ' · kód …' }); deviceCode(x.uid).then(c => { o.textContent = (x.nick || 'Kamarádka') + ' · kód účtu ' + c; }); return o; }));
+            const ocode = h('input', { type: 'text', 'data-move-code': '1', maxlength: 6, autocomplete: 'off', autocapitalize: 'characters', placeholder: 'např. 7DFE2E', 'aria-label': 'Kód účtu z jejího telefonu' });
+            const oerr = h('div', { class: 'err', role: 'alert', hidden: true });
+            fill(obox, h('p', { class: 'note', text: 'Jen OSOBNĚ: ať ti „' + who + '“ na svém (novém) telefonu ukáže Kamarádky → Můj účet → „Kód účtu“ (nebo VIDEOCHAT → Diagnostika). Vyber žádost se STEJNÝM kódem a kód opiš. Starý záznam se nesmaže, jen se označí „převedeno“; zprávy zůstanou. Nový účet dostane přezdívku „' + who + '“.' }),
+              h('label', { text: 'Nová žádost (přezdívka · kód účtu):' }), osel, h('label', { text: 'Kód účtu z jejího telefonu:' }), ocode, oerr,
+              h('div', { class: 'row' }, btn('primary', '🔁 Převést členství', async ev => {
+                const b = ev.currentTarget; oerr.hidden = true;
+                if (!confirm('Převést členství „' + who + '“ na vybraný nový účet? Starý účet ztratí přístup do skupiny (záznam zůstane jako „převedeno“).')) return;
+                b.disabled = true;
+                try { await transferMember(roomId, m.uid, osel.value, ocode.value); } catch (e) { b.disabled = false; showErr(oerr, e); }
+              }, { 'data-act': 'move-go' })));
+          }
+          tbox = tbox ? h('div', {}, tbox, obox) : obox;
+        }
         if (m.status === 'replaced') { act = h('div', { class: 'row' }); }
         const repl = m.status === 'replaced' && mgr ? h('div', { class: 'fstat', 'data-replaced': '1', text: 'převedeno na: …' }) : null;
         if (repl) { const nw = S.members.find(x => x.uid === m.replacedBy); deviceCode(m.replacedBy).then(c => { repl.textContent = 'převedeno na: ' + ((nw && nw.nick) || 'nový účet') + ' · kód ' + c; }); }
@@ -1378,6 +1412,7 @@ async function initJoin(root) {
   // 1g: jediná obrazovka – přezdívka + „Požádat o přijetí“. Žádné zaškrtávátko, nic dalšího se neukládá.
   const nick = h('input', { type: 'text', id: 'jNick', maxlength: 24, placeholder: 'Tvoje přezdívka', value: local.nick(), autocomplete: 'nickname' });
   const err = h('div', { class: 'err', role: 'alert', hidden: true });
+  let asTransfer = false;
   const accept = btn('primary', 'Požádat o přijetí', async () => {
     const n = cleanNick(nick.value);
     if (!n) { err.hidden = false; err.textContent = 'Napiš svou přezdívku.'; return; }
@@ -1387,7 +1422,7 @@ async function initJoin(root) {
       catch (e) { if (!(e && e.code === 'bandapp/already-member')) throw e; dropToken(); const r = { id: inv.roomId, name: '', role: e.status || 'member', from: inv.fromNick }; local.saveRoom(r); return roomView(r, errText(e)); }
       local.setNick(n); const r = { id: inv.roomId, name: '', role: 'pending', from: inv.fromNick }; local.saveRoom(r);
       dropToken();
-      roomView(r);
+      roomView(r, asTransfer ? 'Žádost o převod odeslána. Ukaž zakladatelce OSOBNĚ svůj kód účtu ' + (await deviceCode(fb.uid)) + ' – ona u tvého dřívějšího záznamu klepne na „🔁 Převést na nový účet…“ a kód opíše.' : undefined);
     } catch (e) {
       noteDiagErr('pozvánka', e); err.hidden = false; err.textContent = 'Žádost se nepodařilo odeslat. ' + errText(e);
       const final = ['bandapp/invite-used', 'bandapp/invite-missing'].includes(e && e.code);
@@ -1395,10 +1430,15 @@ async function initJoin(root) {
       if (final) dropToken();
     }
   }, { id: 'jAccept' });
+  // 1.2.4: stejná žádost, jen s návodem pro převod (pravidla beze změny – převod pak potvrdí zakladatelka osobně kódem).
+  const askMove = btn('secondary', '🔁 Mám nový účet – požádat o převod', () => { asTransfer = true; accept.click(); }, { id: 'jTransfer' });
+  const myCode = h('p', { class: 'note', id: 'jMyCode', text: 'Kód účtu tohoto telefonu: …' }); deviceCode(fb.uid).then(c => { myCode.textContent = 'Kód účtu tohoto telefonu: ' + c; });
   fill(root, 
     h('h2', { id: 'jTitle', 'data-state': 'invite' }, '✉️ Pozvánka od „', h('span', { text: inv.fromNick || 'kamarádka' }), '“'),
     h('label', { for: 'jNick', text: 'Tvoje přezdívka (ne celé jméno)' }), nick,
     err, h('div', { class: 'row' }, accept),
+    h('p', { class: 'note', text: 'Už ve skupině jsi, ale s jiným přihlášením (jiný telefon, Safari, smazaná data)? Napiš STEJNOU přezdívku a klepni na „Požádat o převod“. Zakladatelka pak u tvého dřívějšího záznamu převede členství na tento účet. Nic se nesmaže.' }),
+    myCode, h('div', { class: 'row' }, askMove),
     ...privacyLines('Odesláním žádosti přijímáš pravidla skupiny.'));
 
   async function joinNoAccount(known) {
@@ -1427,7 +1467,7 @@ async function initJoin(root) {
   }
   function roomView(r, notice) {
     fill(root, h('p', { class: 'note', text: 'Načítám…' }));
-    const noticeEl = () => notice ? h('div', { class: 'note', id: 'jAlready', 'data-state': 'already-member', text: '✅ ' + notice }) : null;
+    const noticeEl = () => notice ? h('div', { class: 'note', id: 'jAlready', 'data-state': /^Žádost o převod/.test(notice) ? 'transfer-requested' : 'already-member', text: '✅ ' + notice }) : null;
     // 1.1: „cur“ = vždy POSLEDNÍ stav vlastního záznamu (dřív si chat pamatoval přezdívku z prvního načtení).
     let chatOff = null, roomName = '', cur = null, asP = null;
     const ned = nickEditor(() => (cur && cur.nick) || local.nick(), () => { });

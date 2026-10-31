@@ -87,7 +87,7 @@ UIDJS = "(async()=>{const f=await import('./friends.js');const b=await f.firebas
 async def codes(pg, nick):
     await pg.evaluate("location.hash='#friends'"); await pg.wait_for_timeout(800)
     await wait(pg, "[...document.querySelectorAll('#frContacts [data-devcode]')].every(e=>!e.textContent.includes('…'))&&document.querySelectorAll('#frContacts [data-devcode]').length>0")
-    return await pg.evaluate(f"[...document.querySelectorAll('#frContacts li')].filter(l=>l.textContent.includes('{nick}')).map(l=>[l.dataset.status,(l.querySelector('[data-devcode]')||{{}}).textContent||''])")
+    return await pg.evaluate(f"[...document.querySelectorAll('#frContacts li')].filter(l=>{{const c=l.cloneNode(true);c.querySelectorAll('[data-move-box],[data-transfer-box]').forEach(x=>x.remove());return c.textContent.includes('{nick}')}}).map(l=>[l.dataset.status,(l.querySelector('[data-devcode]')||{{}}).textContent||''])")
 async def ring(A, X, nick, label):
     ok(f'{label}: Laurinka volá „{nick}“', await call(A, nick))
     got = await wait(X, "document.getElementById('vcIncoming')", 20000)

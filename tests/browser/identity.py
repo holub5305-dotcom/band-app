@@ -8,6 +8,7 @@ import asyncio, os, re, json, shutil, subprocess, threading, functools, http.ser
 from playwright.async_api import async_playwright
 HERE = os.path.dirname(os.path.abspath(__file__)); RULES = os.path.join(HERE, '..', '..', 'firestore.rules')
 OLD, NEW = os.environ['OLD'], os.environ.get('NEW', os.path.join(HERE, '..', '..'))
+NEWV, NEWC = os.environ.get('NEWV', '1.2.4'), os.environ.get('NEWC', '15')
 SEED_CWD = os.environ.get('SEED_CWD', HERE); LR = os.path.join(SEED_CWD, '_load_rules.mjs'); shutil.copy(os.path.join(HERE, 'load_rules.mjs'), LR)
 SERVE = '/tmp/bandapp-identity-serve'; LINK = SERVE + '/band-app'; PORT = 8797
 BASE = f'http://localhost:{PORT}/band-app/index.html?emulator=1'
@@ -129,8 +130,8 @@ async def main():
         point(NEW)
         for pg in (A, T):
             await pg.goto(BASE); await pg.wait_for_timeout(800); fl = await pg.evaluate(UPDATE_FLOW); await pg.reload(); await pg.wait_for_timeout(1500)
-        ok('1.2.3: Táta – SW aktualizace na band-app-pages-14', await T.evaluate('caches.keys()') == ['band-app-pages-14'], await T.evaluate('caches.keys()'))
-        ok('1.2.3: patička 1.2.3', 'BAND APP 1.2.3' in await T.evaluate('document.body.innerText'))
+        ok(f'{NEWV}: Táta – SW aktualizace na band-app-pages-{NEWC}', await T.evaluate('caches.keys()') == [f'band-app-pages-{NEWC}'], await T.evaluate('caches.keys()'))
+        ok(f'{NEWV}: patička {NEWV}', f'BAND APP {NEWV}' in await T.evaluate('document.body.innerText'))
         ok('aktualizace: stejné uid i kód účtu', await T.evaluate(UIDJS) == uT and await T.evaluate(CODEJS) == cT)
         await kam(T); ui = await mycode_ui(T); ok('aktualizace: Kamarádky → Můj účet ukazuje „Kód účtu: ' + str(cT) + '“', cT in ui and 'Kód účtu' in ui and 'Není to heslo' in ui, ui[:160])
         lc = await codes(A, 'Táta'); ok('aktualizace: Laurinka vidí STEJNÝ kód, pořád jeden Táta', len(lc) == 1 and cT in lc[0][2] and lc[0][0] == 'approved', lc)
