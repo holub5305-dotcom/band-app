@@ -7,14 +7,14 @@
  * jen schválená, nezablokovaná členka téže skupiny a jen účastnice daného hovoru.
  * Omezení: hovor zazvoní jen v OTEVŘENÉ BAND APP (i na pozadí, pokud ji telefon nechá běžet).
  * Úplně zavřená aplikace (hlavně iPhone) hovor nedostane – na to by byl potřeba push server. */
-import { connect, local, knownAccountCode, isConfigured, isEmulator, notifyEnabled, notifySupported, lockedReason, firebaseBase, deviceCode, validToken } from './friends.js';
+import { connect, local, knownAccountCode, isConfigured, isEmulator, notifyEnabled, notifySupported, lockedReason, firebaseBase, deviceCode, validToken, errText } from './friends.js';
 import { ICE_SERVERS, STATIC_TURN_SERVERS, TURN_CREDENTIALS_URL, MAX_PARTICIPANTS } from './rtc-config.js';
 
 const RING_MS = 45e3, RING_WINDOW_MS = 60e3, CALL_TTL_MS = 3 * 3600e3, HEARTBEAT_MS = 60e3, STALE_MS = 150e3, LOST_MS = 60e3,
   NOCONN_WARN_MS = 20e3, NOCONN_END_MS = 50e3;
 const NOCONN_MSG = 'Spojení se nepodařilo – zkuste Wi-Fi.';   // síť nejspíš blokuje přímé spojení (bez TURN)
 const NOTIFY_TAG = 'bandapp-hovor';
-export const APP_VERSION = '1.2.5';
+export const APP_VERSION = '1.2.6';
 const RETRY_MS = 15e3, START_CHECK_MS = 15e3;
 const $ = id => document.getElementById(id);
 const rnd = () => { const b = new Uint8Array(9); crypto.getRandomValues(b); return Array.from(b, x => x.toString(16).padStart(2, '0')).join(''); };
@@ -224,26 +224,32 @@ export async function initVideochat() {
  * – nepřihlášený bez skupin → nic nezakládá, jen srozumitelně vysvětlí, jak pozvánku otevřít tady.
  * Volá se opakovaně – je levné a idempotentní. */
 async function ensureStarted() {
+  // 1.2.6: přihlášení zmizelo (odvolané / ztracené) → zastavit naslouchání a ukázat „odhlášeno – obnov účet“.
+  if (V.fb && !V.fb.auth.currentUser) { stopAllRooms(); V.fb = null; V.started = false; V.uid = null; V.code = ''; }
   if (V.fb) { syncRooms(); return; }
   if (V.starting) return;
   V.starting = true;
   try {
-    if (lockedReason() || !(await isConfigured())) { render(); return; }
+    // 1.2.6 OPRAVA: dřív tu bylo „if (lockedReason() || …) return“. lockedReason() je ale jen MÍSTNÍ značka „tento
+    // telefon měl účet s obnovovacím kódem“ (recoverable-uid) – nastaví se, jakmile si člověk kód vytvoří nebo účet
+    // obnoví. VIDEOCHAT pak Firebase vůbec nenačetl (Firebase „nepřipojeno“, Přihlášení „odhlášeno“, naslouchání
+    // neaktivní) i u PŘIHLÁŠENÉHO účtu. Rozhoduje jen skutečné přihlášení Firebase (auth.currentUser).
+    if (!(await isConfigured())) { render(); return; }
     // Telefon, který se nikdy nepřihlásil (žádné uložené přihlášení Firebase) a nemá skupinu: Firebase ani App Check
     // se vůbec nenačítají (stejně jako v 1.1.3 bez otevření Kamarádek) – jen se zobrazí návod.
-    if (!V.base && !local.rooms().length && (await persistedAuth()) === false) { V.noAuth = true; render(); return; }
+    if (!V.base && !local.rooms().length && !lockedReason() && (await persistedAuth()) === false) { V.noAuth = true; render(); return; }
     V.noAuth = false;
     if (!V.base) {
-      try { V.base = await firebaseBase(); } catch (e) { noteErr('Firebase', e); V.err = 'Videochat se teď nepřipojil (zkontroluj internet).'; render(); return; }
+      try { V.base = await firebaseBase(); } catch (e) { noteErr('Firebase', e); V.authErr = { code: errCode(e), at: Date.now() }; V.err = 'Videochat se teď nepřipojil (zkontroluj internet).'; render(); return; }
       if (!V.authHooked) { V.authHooked = true; try { V.base.A.onAuthStateChanged(V.base.auth, () => { setTimeout(ensureStarted, 0); }); } catch (e) { } }
     }
     const u = V.base.auth.currentUser;
     V.code = u ? await deviceCode(u.uid) : '';
-    if (!u && !local.rooms().length) { render(); return; }
+    if (!u && !local.rooms().length && !lockedReason()) { render(); return; }
     // 1.2.3: skupiny v zařízení, ale přihlášení chybí → žádný nový účet (connect() ho už nikdy nezaloží), jen vysvětlit.
-    if (!u) { V.lost = await knownAccountCode(); noteErr('přihlášení', { code: 'bandapp/no-account' }); render(); return; }
+    if (!u) { V.lost = await knownAccountCode(); noteErr('přihlášení', { code: lockedReason() ? 'bandapp/signed-out' : 'bandapp/no-account' }); render(); return; }
     V.lost = null;
-    try { V.fb = await connect(); } catch (e) { noteErr('připojení', e); V.err = 'Videochat se teď nepřipojil (zkontroluj internet).'; render(); return; }
+    try { V.fb = await connect(); } catch (e) { noteErr('připojení', e); V.authErr = { code: errCode(e), at: Date.now() }; V.err = 'Videochat se teď nepřipojil (zkontroluj internet).'; render(); return; }
     V.code = await deviceCode(V.fb.uid);
     V.err = ''; V.started = true; syncRooms();
   } catch (e) { noteErr('start', e); render(); }
@@ -865,8 +871,10 @@ function render() {
   if (V.err) kids.push(h('div', { class: 'vc-err', role: 'alert', id: 'vcErr', text: V.err }));
   const rooms = approvedRooms();
   if (!V.fb) {
-    if ((V.noAuth || (V.base && !V.base.auth.currentUser)) && !lockedReason()) { kids.push(...notMember('signed-out')); put(root, kids); return; }
-    kids.push(h('p', { class: 'note', 'data-state': 'no-rooms', id: 'vcNoRooms', text: rooms.length ? 'Videochat se připojuje…' : (lockedReason() ? 'Tento telefon je v Kamarádkách odhlášený. Přihlas se tam znovu obnovovacím kódem – potom se zapnou i hovory.' : 'Videochat je jen pro schválené členky skupiny. Nejdřív se přidej do skupiny v sekci Kamarádky (a počkej na schválení).') }));
+    const out = (V.noAuth || (V.base && !V.base.auth.currentUser));
+    if (out && lockedReason()) { kids.push(h('div', { class: 'vc-err', role: 'alert', 'data-state': 'signed-out', id: 'vcSignedOut', text: '🔒 Odhlášeno – obnov účet' + (V.lost ? ' ' + V.lost : '') + '. Tento telefon není přihlášený k Firebase, proto hovory nezvoní. Kamarádky → ♻️ Mám obnovovací kód → zadej svůj obnovovací kód. Nový účet nezakládej.' })); put(root, kids); return; }
+    if (out) { kids.push(...notMember('signed-out')); put(root, kids); return; }
+    kids.push(h('p', { class: 'note', 'data-state': 'no-rooms', id: 'vcNoRooms', text: rooms.length ? 'Videochat se připojuje…' : (lockedReason() && !V.base ? 'Ověřuji přihlášení…' : lockedReason() ? 'Tento telefon je v Kamarádkách odhlášený. Přihlas se tam znovu obnovovacím kódem – potom se zapnou i hovory.' : 'Videochat je jen pro schválené členky skupiny. Nejdřív se přidej do skupiny v sekci Kamarádky (a počkej na schválení).') }));
     put(root, kids); return;
   }
   if (!rooms.length) {
@@ -918,11 +926,12 @@ function diagEl() {
 }
 const callRow = r => r ? 'před ' + ago(r.at) + ' · kód ' + (r.code || '…') + ' · ' + r.phase + ' · ' + r.result : 'žádný (od otevření aplikace)';
 const ago = t => t ? Math.max(0, Math.round((Date.now() - t) / 1000)) + ' s' : '–';
+/* 1.2.6: „Přihlášení“ podle SKUTEČNÉHO stavu Firebase (dřív stačila místní značka účtu s kódem → „odhlášeno“ i u přihlášeného). */
+const OUT_TEXT = () => 'odhlášeno – obnov účet' + (V.lost ? ' (dřív účet ' + V.lost + ')' : '') + ': Kamarádky → ♻️ Mám obnovovací kód';
 function authText() {
-  if (lockedReason()) return 'odhlášeno (zadej obnovovací kód v Kamarádkách)';
   const u = V.base && V.base.auth.currentUser;
-  if (!V.base) return V.noAuth ? 'ne' : '–';
-  if (!u) return 'ne';
+  if (!V.base) return V.starting ? 'ověřuje se…' : V.noAuth ? 'ne' : lockedReason() ? OUT_TEXT() : '–';
+  if (!u) return lockedReason() || V.lost ? OUT_TEXT() : 'ne';
   const pr = (u.providerData || []).map(p => p.providerId);
   return 'ano · ' + (u.isAnonymous ? 'anonymní' : pr.includes('password') ? 'obnovovací kód (e-mail)' : pr.includes('google.com') ? 'Google' : 'jiný');
 }
@@ -944,7 +953,8 @@ async function fillDiag() {
     ['Internet', navigator.onLine === false ? 'offline' : 'online'],
     ['Firebase', (V.fb || V.base) ? 'připojeno' : V.noAuth ? 'nenačteno – telefon není přihlášený (není co obnovit)' : (V.starting ? 'připojuje se' : 'nepřipojeno')],
     ['Přihlášení', authText()],
-    ['Kód účtu', V.code || '–'],
+    ['Kód účtu', (V.base && V.base.auth.currentUser && V.code) || '–'],
+    ['Chyba přihlášení', V.authErr ? errText(V.authErr) + ', před ' + ago(V.authErr.at) : 'žádná'],
     ['Moje skupiny na serveru', V.srvState === 'ok' ? String(V.srv.size) + ' · schválené: ' + [...V.srv.values()].filter(x => OK_ROLES.includes(x)).length + ' · čeká: ' + [...V.srv.values()].filter(x => x === 'pending').length : V.srvState],
     ['Skupiny v zařízení', String(rooms.length) + ' · schválené podle serveru: ' + appr + (pend ? ' · čeká na schválení: ' + pend : '')],
     ['Naslouchání příchozím hovorům', (on ? 'AKTIVNÍ' : 'neaktivní') + ' (' + on + ' z ' + appr + ')' + (Object.keys(states).length ? ' · ' + Object.entries(states).map(([k, v]) => k + ': ' + v).join(', ') : '')],
@@ -958,8 +968,38 @@ async function fillDiag() {
     ['Upozornění', typeof Notification === 'undefined' ? 'nepodporováno' : Notification.permission === 'granted' ? 'povolena' : 'nepovolena']
   ];
   el.querySelector('#vcDiagBody').replaceChildren(h('dl', {}, ...rows.flatMap(([k, v]) => [h('dt', { text: k }), h('dd', { text: v })])),
-    h('div', { class: 'vc-act' }, h('button', { type: 'button', class: 'secondary', id: 'vcDiagRetry', onclick: () => { stopAllRooms(); V.lastErr = null; V.uid = null; if (V.fb) syncRooms(); else ensureStarted(); fillDiag(); } }, '↻ Znovu připojit hovory')),
+    h('div', { class: 'vc-act' }, h('button', { type: 'button', class: 'secondary', id: 'vcDiagRetry', disabled: !!V.retrying, onclick: retryAuth }, V.retrying ? '⏳ Připojuji…' : '↻ Znovu připojit hovory')),
+    V.retryMsg ? h('p', { class: V.retryMsg.startsWith('✅') ? 'note' : 'vc-err', role: 'status', id: 'vcRetryMsg', 'data-state': V.retryState || '', text: V.retryMsg }) : null,
     h('p', { class: 'note', text: 'Bez osobních údajů – nic se nikam neodesílá. Při potížích pošli tátovi/správci snímek této tabulky.' }));
+}
+/* 1.2.6: „Znovu připojit hovory“ – viditelně: ověří přihlášení u Firebase (obnova tokenu), znovu spustí naslouchání
+ * a napíše výsledek. Nikdy nezakládá nový účet a nic nemaže. */
+async function retryAuth() {
+  if (V.retrying) return;
+  V.retrying = true; V.retryMsg = '⏳ Ověřuji přihlášení u Firebase a znovu zapínám naslouchání hovorům…'; V.retryState = 'working'; fillDiag();
+  let warn = null;
+  try {
+    if (!V.base) { try { V.base = await firebaseBase(); } catch (e) { V.authErr = { code: errCode(e), at: Date.now() }; throw e; }
+      if (!V.authHooked) { V.authHooked = true; try { V.base.A.onAuthStateChanged(V.base.auth, () => { setTimeout(ensureStarted, 0); }); } catch (e) { } } }
+    await V.base.auth.authStateReady();
+    const u = V.base.auth.currentUser;
+    if (u) { try { await u.getIdToken(true); V.authErr = null; } catch (e) { V.authErr = { code: errCode(e), at: Date.now() }; noteErr('přihlášení', e); warn = e; } }
+    stopAllRooms(); V.lastErr = null; V.uid = null;
+    if (V.fb && V.fb.auth.currentUser) syncRooms(); else await ensureStarted();
+    if (!V.base.auth.currentUser) {
+      V.lost = V.lost || await knownAccountCode();
+      V.retryState = 'signed-out';
+      V.retryMsg = '⚠️ Odhlášeno – obnov účet' + (V.lost ? ' ' + V.lost : '') + '. Telefon není přihlášený k Firebase' + (warn ? ' (' + errText(warn) + ')' : '') + '. Kamarádky → ♻️ Mám obnovovací kód. Nový účet se nezakládá, nic se nemaže.';
+    } else {
+      for (let i = 0; i < 20 && V.fb; i++) { if ([...V.listen.values()].some(x => x.state === 'naslouchá')) break; await new Promise(r => setTimeout(r, 500)); }
+      const on = [...V.listen.values()].filter(x => x.state === 'naslouchá').length, code = V.code || await deviceCode(V.base.auth.currentUser.uid);
+      V.retryState = warn ? 'error' : on ? 'ok' : 'no-listen';
+      V.retryMsg = (warn ? '⚠️ ' : on ? '✅ ' : '⚠️ ') + 'Přihlášeno – účet ' + code + '. Naslouchání hovorům: ' + (on ? 'AKTIVNÍ (' + on + ')' : 'neaktivní' + (V.srvState === 'ok' && !approvedRooms().length ? ' – účet nemá schválenou skupinu' : ''))
+        + (warn ? '. Spojení s Firebase ale selhalo: ' + errText(warn) : '') + '.';
+    }
+  } catch (e) {
+    V.retryState = 'error'; V.retryMsg = '❌ Připojení selhalo: ' + errText(e) + (String((e && e.code) || '').startsWith('auth/') ? '' : ' (kód chyby: ' + errCode(e) + ')');
+  } finally { V.retrying = false; render(); fillDiag(); }
 }
 /* Jen pro automatické testy v emulátoru (localhost + ?emulator=1): náhled do stavu. Ve skutečné aplikaci neexistuje. */
 if (isEmulator) window.__vc = { V, startCall: (...a) => startCall(...a), state: () => { const s = V.session; return s && { callId: s.callId, mode: s.mode, cam: s.cam, mic: s.mic, tracks: s.stream ? s.stream.getTracks().map(t => t.kind + ':' + t.readyState + ':' + t.enabled) : [], pcs: [...s.pcs].map(([u, e]) => [u, e.pc.iceConnectionState, e.stream.getTracks().map(t => t.kind + ':' + (t.muted ? 'muted' : 'live')).join(',')]), peers: [...s.peers].map(([u, p]) => [u, p.state, p.cam, p.mic]) }; } };

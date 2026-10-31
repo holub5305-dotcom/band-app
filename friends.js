@@ -340,16 +340,53 @@ export async function regenerateCode(oldCode) {
 export async function restoreAccount(input) {
   await requireVerified();
   const c = parseCode(input); if (!c) throw err('bandapp/bad-code');
+  flash('');                                        // 1.2.6: staré oznámení pryč, ať se nesplete s výsledkem tohoto pokusu
   const fb = await base(), email = recoveryEmail(fb, c.id);
-  if (fb.auth.currentUser && codeEmail(fb.auth.currentUser) === email) return { same: true, uid: fb.uid };
-  await fb.A.signInWithEmailAndPassword(fb.auth, email, c.secret);
+  if (fb.auth.currentUser && codeEmail(fb.auth.currentUser) === email) return { same: true, uid: fb.uid, code: await deviceCode(fb.uid) };
+  // 1.2.6: který účet byl na zařízení dřív (přihlášený, nebo podle místní značky) – aby šlo jasně říct, komu kód patří.
+  const prevCode = fb.auth.currentUser ? await deviceCode(fb.auth.currentUser.uid) : await knownAccountCode();
+  try { await fb.A.signInWithEmailAndPassword(fb.auth, email, c.secret); }
+  catch (e) { noteDiagErr('obnova účtu', e); throw e; }
   lsDel('signed-out'); markRecoverable(fb);
   syncedUid = fb.uid;
   const s = await syncState(fb);                    // jiný účet → místní data předchozího účtu se zazálohují v zařízení
   const d = await discoverRooms(fb);                // skupiny i bez zálohy (vlastní členství)
   fbReady = fb; accountChanged();
-  return { uid: fb.uid, synced: s.ok, found: d.ok ? d.added : null };
+  const code = await deviceCode(fb.uid);
+  return { uid: fb.uid, code, prevCode, other: !!prevCode && prevCode !== code, synced: s.ok, found: d.ok ? d.added : null };
 }
+/* 1.2.6: patří kód účtu, který je teď přihlášený? (bez přihlašování – jen porovná ID kódu s adresou účtu) */
+export async function isCurrentCode(input) {
+  const c = parseCode(input); if (!c) return false;
+  const fb = await base().catch(() => null), u = fb && fb.auth.currentUser;
+  return !!u && codeEmail(u) === recoveryEmail(fb, c.id);
+}
+/* 1.2.6: srozumitelný výsledek obnovy – vždy s kódem účtu, kterému obnovovací kód patří. Nic se neslučuje. */
+export function restoreText(r) {
+  if (!r) return '';
+  if (r.same) return '✅ Obnovovací kód patří účtu ' + r.code + ' – ten už je na tomto telefonu přihlášený. Obnova není potřeba.';
+  if (r.other) return '⚠️ Obnovovací kód patří účtu ' + r.code + ', ne účtu ' + r.prevCode + ', který tu byl dřív. Telefon je teď přihlášený jako ' + r.code
+    + '. Nic se nesloučilo ani nesmazalo. Skupiny účtu ' + r.prevCode + ' převede jen zakladatelka (🔁 Převést na nový účet), nebo se k němu vrátíš jeho vlastním obnovovacím kódem.';
+  return '✅ Přihlášeno – účet ' + r.code + ' je obnovený (stejný účet, skupiny i zprávy zůstaly).';
+}
+/* 1.2.6: oznámení nahoře na obrazovce, které přežije překreslení i znovunačtení stránky (do zavření tlačítkem OK). */
+const FLASH_KEY = LS + 'flash';
+export function flash(text) {
+  try { if (text) sessionStorage.setItem(FLASH_KEY, text); else sessionStorage.removeItem(FLASH_KEY); } catch (e) { }
+  showFlash();
+}
+function showFlash() {
+  if (typeof document === 'undefined' || !document.body) return;
+  let text = ''; try { text = sessionStorage.getItem(FLASH_KEY) || ''; } catch (e) { }
+  const old = document.getElementById('frFlash'); if (old) old.remove();
+  if (!text) return;
+  const ok = h('button', { type: 'button', id: 'frFlashOk', style: 'min-height:44px;background:#b3001b;color:#fff;border:0;border-radius:10px;padding:8px 14px;font:inherit;flex:none' }, 'OK');
+  const el = h('div', { id: 'frFlash', role: 'status', 'data-state': /^⚠️/.test(text) ? 'warn' : 'ok', style: 'position:fixed;left:50%;transform:translateX(-50%);top:calc(10px + env(safe-area-inset-top));z-index:10000;width:min(94vw,480px);display:flex;gap:10px;align-items:center;background:#2a0508;color:#fff;border:1px solid #e0202f;border-radius:14px;padding:10px 12px;box-shadow:0 6px 24px #000a;font:15px system-ui,Arial' },
+    h('span', { style: 'flex:1', text }), ok);
+  ok.addEventListener('click', () => flash(''));
+  document.body.append(el);
+}
+if (typeof document !== 'undefined') { if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', showFlash); else setTimeout(showFlash, 0); }
 const FR_KEYS = ['rooms', 'nick', 'favorites', 'blocked-names', 'state-uid', 'dirty', 'recoverable-uid', 'signed-out', 'lastread'];   // 1.1: + lastread (jen čtení v tomto zařízení)
 function clearDevice(all) {
   clearTimeout(pushTimer);
@@ -485,7 +522,7 @@ export async function sendMessage(roomId, nick, text) {
 export function noAccountBlock(opts) {
   const standalone = typeof matchMedia === 'function' && matchMedia('(display-mode: standalone)').matches;
   const e2 = h('div', { class: 'err', role: 'alert', hidden: true });
-  const kids = [h('h3', { 'data-state': 'no-account', id: 'frNoAccount', text: '🔐 Tento ' + (standalone ? 'telefon (nainstalovaná BAND APP)' : 'prohlížeč') + ' není přihlášený k účtu BAND APP' })];
+  const kids = [h('h3', { 'data-state': 'no-account', id: 'frNoAccount', text: '🔐 Odhlášeno – obnov účet. Tento ' + (standalone ? 'telefon (nainstalovaná BAND APP)' : 'prohlížeč') + ' není přihlášený k účtu BAND APP' })];
   if (opts.known) kids.push(h('div', { class: 'warnbox', 'data-state': 'known-account', id: 'frKnownAccount', text: '⚠️ Tady už byl přihlášený účet s kódem ' + opts.known + ', ale přihlášení chybí. NEZAKLÁDEJ nový účet – nový účet by měl jiný kód a do skupiny by tě musela znovu pustit zakladatelka. Obnov svůj účet obnovovacím kódem, nebo používej telefon či prohlížeč, kde jsi s kódem ' + opts.known + ' přihlášená.' }));
   kids.push(h('p', { class: 'note', text: 'Máš už účet (např. ses přidala přes pozvánku)? Každý prohlížeč a nainstalovaná BAND APP mají VLASTNÍ přihlášení. Na telefonu, kde účet máš, ho zabezpeč (Kamarádky → Můj účet → 🔐 Zabezpečit účet) a tady ho obnov obnovovacím kódem. Kód účtu zůstane stejný.' }));
   const row = h('div', { class: 'row' });
@@ -650,7 +687,13 @@ export async function syncNotifier() {
 export function stopNotifier() { NOTE.subs.forEach(u => { try { u(); } catch (e) { } }); NOTE.subs.clear(); NOTE.unread.clear(); NOTE.seen.clear(); NOTE.msgs.clear(); emitUnread(); }
 if (typeof document !== 'undefined') document.addEventListener('visibilitychange', () => { if (visible()) NOTE.active.forEach((on, id) => { if (on) markRead(id); }); });
 
+/* 1.2.6: každá chyba přihlášení Firebase (auth/…) má za českou větou i kategorii chyby (bez tajemství), aby šlo
+ * z fotky obrazovky poznat, co přesně selhalo. */
 function errText(e) {
+  const c = String((e && e.code) || ''), t = errText0(e);
+  return c.startsWith('auth/') ? t + ' (chyba Firebase: ' + c + ')' : t;
+}
+function errText0(e) {
   const c = (e && e.code) || '';
   if (c === 'bandapp/invite-used') return 'Tuto pozvánku mezitím použil někdo jiný. Každá pozvánka platí jen jednou – požádej o novou.';
   if (c === 'bandapp/invite-missing') return 'Pozvánka neexistuje – byla zrušena nebo vypršela.';
@@ -679,11 +722,17 @@ function errText(e) {
   if (c === 'auth/weak-password' || c === 'auth/password-does-not-meet-requirements') return 'Firebase má zapnutá zvláštní pravidla pro hesla. Viz návod SETUP-FIREBASE.md (Password policy nech vypnutou).';
   if (c === 'auth/unauthorized-domain') return 'Tato adresa není ve Firebase povolená (Authorized domains). Viz návod SETUP-FIREBASE.md.';
   if (c === 'auth/operation-not-allowed' || c === 'auth/admin-restricted-operation') return 'Ve Firebase není zapnuté přihlášení Email/Password (nebo Anonymous). Viz návod SETUP-FIREBASE.md.';
+  if (c === 'auth/network-request-failed' || c === 'auth/timeout') return 'Firebase teď není dostupný – zkontroluj internet (Wi-Fi nebo mobilní data) a zkus to znovu. Účet ani data se nezměnily.';
+  if (c === 'auth/invalid-api-key' || c.startsWith('auth/api-key-not-valid') || c === 'auth/app-not-authorized' || c === 'auth/invalid-app-credential') return 'Firebase odmítl tuto aplikaci (nastavení projektu). Pošli správci snímek této hlášky.';
+  if (c === 'auth/web-storage-unsupported') return 'Telefon nedovolí uložit přihlášení (úložiště prohlížeče je vypnuté nebo plné).';
+  if (c === 'auth/quota-exceeded') return 'Firebase má teď vyčerpaný limit přihlášení. Zkus to později.';
+  if (c === 'auth/internal-error') return 'Firebase hlásí vnitřní chybu. Zkus to za chvíli znovu.';
   if (c === 'auth/requires-recent-login') return 'Firebase chce čerstvé ověření. Zadej starý kód znovu.';
   if (c.includes('permission-denied')) return 'Nemáš k tomu oprávnění (možná pozvánka vypršela nebo tě zakladatelka skupiny odebrala).';
   if (c.includes('unavailable') || c.includes('network')) return 'Není připojení k internetu. Zkus to znovu.';
   if (c.includes('resource-exhausted') || c.includes('quota')) return 'Dnešní bezplatný limit je vyčerpaný. Zkus to zítra.';
   if (c.includes('failed-precondition') || c.includes('aborted')) return 'Pozvánku mezitím použil někdo jiný nebo se změnila. Zkus to znovu nebo požádej o novou.';
+  if (c.startsWith('auth/')) return 'Přihlášení k Firebase se nepovedlo.';
   return 'Něco se nepovedlo. Zkus to znovu.';
 }
 export { errText };
@@ -930,12 +979,12 @@ function accountPanel(onRestored, onSignedOut) {
       h('div', { class: 'row' }, btn('secondary', '♻️ Obnovit účet', async ev => {
         const b = ev.currentTarget; e2.hidden = true;
         if (!parseCode(inp.value)) return showE({ code: 'bandapp/bad-code' });
-        if (!confirmSwitch(fb)) return;
+        if (!(await isCurrentCode(inp.value)) && !confirmSwitch(fb)) return;
         b.disabled = true;
         try {
-          const r = await restoreAccount(inp.value); inp.value = '';
+          const r = await restoreAccount(inp.value); inp.value = ''; flash(restoreText(r));
           if (!r.same && onRestored) return onRestored();
-          await render(); const m = document.getElementById('frAccountMsg'); if (m) m.textContent = r.same ? 'Tento účet už je na tomto zařízení přihlášený.' : 'Účet je obnovený.';
+          await render(); const m = document.getElementById('frAccountMsg'); if (m) m.textContent = restoreText(r);
         }
         catch (e) { showE(e); b.disabled = false; }
       }, { id: 'frRestore' })),
@@ -1035,7 +1084,7 @@ async function initIndex(root) {
       let fb = null; try { fb = await base(); } catch (e) { }
       if (mode === 'restore' && !confirmSwitch(fb)) return;
       go.disabled = true;
-      try { await restoreAccount(inp.value); inp.value = ''; open(); }
+      try { const r = await restoreAccount(inp.value); inp.value = ''; flash(restoreText(r)); open(); }
       catch (e) { go.disabled = false; e2.hidden = false; e2.textContent = errText(e); }
     }, { id: 'frRestoreGo', disabled: !verified });
     const fresh = btn('secondary', 'Začít znovu s novým účtem', async () => {
@@ -1043,8 +1092,11 @@ async function initIndex(root) {
       fresh.disabled = true;
       try { await startNewAccount(); open(); } catch (e) { fresh.disabled = false; e2.hidden = false; e2.textContent = errText(e); }
     }, { id: 'frFreshAccount' });
-    const head = mode === 'changed' ? [h('h3', { 'data-state': 'code-changed', text: '🔒 ' + CHANGED_TEXT }),
-      h('p', { class: 'note', text: 'Toto zařízení už není přihlášené k tvému účtu. Tvoje skupiny a kamarádky jsou v pořádku – vrátíš se k nim novým kódem.' })]
+    // 1.2.6: „changed“ = zařízení má značku účtu s kódem, ale přihlášení Firebase chybí. Příčinou může být nový kód
+    // na jiném zařízení, ale i ztracené přihlášení v telefonu – proto obecně „Odhlášeno – obnov účet“ + který účet to byl.
+    const known = await knownAccountCode();
+    const head = mode === 'changed' ? [h('h3', { 'data-state': 'code-changed', text: '🔒 Odhlášeno – obnov účet' + (known ? ' ' + known : '') }),
+      h('p', { class: 'note', text: 'Tento telefon už není přihlášený' + (known ? ' k účtu ' + known : '') + '. Stává se to po vytvoření nového kódu na jiném zařízení nebo když telefon smaže uložené přihlášení. Tvoje skupiny, kamarádky a zprávy jsou v pořádku – vrátíš se k nim svým (nejnovějším) obnovovacím kódem. Nový účet nezakládej.' })]
       : mode === 'manual' ? [h('h3', { 'data-state': 'signed-out', text: '🔒 Jsi z tohoto zařízení odhlášená.' }),
       h('p', { class: 'note', text: 'Zpátky se dostaneš jen se svým obnovovacím kódem.' })]
       : [h('h3', { 'data-state': 'restore', text: '♻️ Mám obnovovací kód' }),
@@ -1369,7 +1421,7 @@ async function initJoin(root) {
   addEventListener('hashchange', () => { if (/(?:^|[#&])t=/.test(location.hash)) location.reload(); });   // další odkaz otevřený ve stejné kartě
   const say = (cls, text, state) => fill(root, h('div', { class: cls, role: 'status', 'data-state': state, text }));
   // 1h: odhlášené zařízení (kód změněn jinde / ruční odhlášení) – žádný nový účet; obnova je v BAND APP → Kamarádky.
-  const signedOut = () => fill(root, h('div', { class: 'err', role: 'alert', 'data-state': 'signed-out', text: lockedReason() === 'manual' ? 'Jsi z tohoto zařízení odhlášená. Zpátky se dostaneš jen s obnovovacím kódem.' : CHANGED_TEXT }),
+  const signedOut = () => fill(root, h('div', { class: 'err', role: 'alert', 'data-state': 'signed-out', text: lockedReason() === 'manual' ? 'Jsi z tohoto zařízení odhlášená. Zpátky se dostaneš jen s obnovovacím kódem.' : 'Odhlášeno – obnov účet. Tento telefon není přihlášený ke svému účtu (nový kód na jiném zařízení nebo ztracené přihlášení). Zadej svůj obnovovací kód v BAND APP → Kamarádky.' }),
     h('a', { href: 'index.html' + location.search + '#friends', class: 'note', style: 'color:#ffb3ba', id: 'jRestoreLink', text: 'Zadat kód v BAND APP → Kamarádky' }));
   addEventListener(SIGNED_OUT_EVENT, () => { if (lockedReason()) signedOut(); });
   let token = '';
@@ -1449,7 +1501,7 @@ async function initJoin(root) {
     const rgo = btn('primary', '♻️ Obnovit účet', async () => {
       e3.hidden = true; if (!parseCode(inp.value)) { e3.hidden = false; e3.textContent = errText({ code: 'bandapp/bad-code' }); return; }
       rgo.disabled = true;
-      try { await restoreAccount(inp.value); inp.value = ''; location.reload(); } catch (e) { rgo.disabled = false; e3.hidden = false; e3.textContent = errText(e); }
+      try { const r = await restoreAccount(inp.value); inp.value = ''; flash(restoreText(r)); location.reload(); } catch (e) { rgo.disabled = false; e3.hidden = false; e3.textContent = errText(e); }
     }, { id: 'jRestoreGo', hidden: true });
     const copy = btn('secondary', '📋 Zkopírovat odkaz pozvánky', async () => { try { await navigator.clipboard.writeText(location.origin + location.pathname + location.search + '#t=' + token); copy.textContent = '✅ Zkopírováno – vlož ho v BAND APP'; } catch (e) { } }, { id: 'jCopyInvite' });
     fill(root, h('h2', { id: 'jTitle', 'data-state': 'invite-no-account' }, '✉️ Pozvánka do BAND APP'),
