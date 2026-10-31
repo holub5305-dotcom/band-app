@@ -2,7 +2,8 @@
 
 **Výchozí stav: TURN je VYPNUTÝ.** BAND APP 1.2.0 funguje jen se STUN. Většina hovorů na Wi-Fi se spojí;
 na některých mobilních sítích nebo školních/firemních Wi-Fi se přímé spojení nenaváže a aplikace po 20 s
-ukáže „Spojení se nepodařilo – zkuste Wi-Fi.“ (1:1 hovor po 50 s skončí se stejnou hláškou).
+ukáže (od 1.2.7) „Spojení se nepodařilo navázat (ICE selhalo) – pravděpodobně mobilní síť bez TURN serveru…“
+(1:1 hovor po 50 s skončí se stejnou hláškou). Diagnostika 🛠 v hovoru pak ukáže „TURN ne“ a kandidáty bez „relay“.
 
 Tato složka (začíná podtržítkem, takže ji GitHub Pages **nezveřejňuje**) obsahuje hotovou malou službu, která
 přihlášené **schválené** člence vydá TURN údaje platné jen 4 h. Nic neukládá ani neloguje; obraz a zvuk
