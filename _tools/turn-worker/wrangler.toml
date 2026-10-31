@@ -18,7 +18,4 @@ ALLOWED_ORIGIN = "https://holub5305-dotcom.github.io"
 TTL_SECONDS = "14400"
 RATE_PER_10MIN = "30"
 
-# Produkční worker se nasadí až po schválení jako samostatný worker „bandapp-turn“ (vlastní tajemství):
-# [env.prod]
-# name = "bandapp-turn"
-# vars = { ..., FIREBASE_PROJECT_ID = "band-app-7c9ca" }
+# Produkční worker: samostatný soubor wrangler.prod.toml (bandapp-turn-prod, projekt band-app-7c9ca).

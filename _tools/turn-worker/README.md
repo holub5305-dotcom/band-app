@@ -34,4 +34,4 @@ Bez tajemství vrací `/ice` chybu **503 `not_configured`** a `GET /health` ukaz
 Testovací worker `bandapp-turn-test` (projekt `band-app-test-9fc3e`). Tajemství zadává **jen Vladimír** v Cloudflare Dashboardu
 (Workers & Pages → bandapp-turn-test → Settings → Variables and Secrets → Add → Type: Secret) nebo `npx wrangler secret put`.
 Při dalším nahrání kódu přes API se posílá `keep_bindings: ["secret_text"]`, aby se tajemství nesmazala.
-Produkční worker bude samostatný (`bandapp-turn`, `band-app-7c9ca`, vlastní tajemství) – až po schválení.
+Produkční worker je samostatný: `bandapp-turn-prod` (`wrangler.prod.toml`, projekt `band-app-7c9ca`, vlastní tajemství zadaná majitelem) – nasazuje se až po souhlasu, viz docs/VYDANI-1.3.0.md.

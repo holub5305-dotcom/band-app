@@ -178,6 +178,18 @@ async def main():
             ok('6 služba neodpovídá (timeout 5 s): náhradní přímé spojení', await wait(A, CONN % 1, 40000) and await wait(B, CONN % 1, 30000), round(time.time() - t0))
             ok('6 timeout: diagnostika „služba neodpověděla včas“', 'služba neodpověděla včas' in await A.evaluate("__vc.V.turn&&__vc.V.turn.text||''"))
             await A.click('#vcHang'); ok('6 timeout: konec u obou', await ended(A, B)); mock('/_mode?m=ok')
+            # 6d) služba vůbec neexistuje / nedostupná (např. Worker ještě není nasazený) → chová se jako 1.2.7
+            for k in 'AB': await P[k]['pg'].evaluate("localStorage.setItem('bandapp-test-turn-url','http://127.0.0.1:9/ice')")
+            await reset_cache(); t0 = time.time()
+            rang, _ = await call('B', 'A'); ok('6 služba nedostupná: A zvoní', rang)
+            ok('6 služba nedostupná: náhradní přímé spojení (jako 1.2.7)', await wait(A, CONN % 1, 30000) and await wait(B, CONN % 1, 30000), round(time.time() - t0))
+            await A.wait_for_timeout(4000)
+            ok('6 služba nedostupná: diagnostika „služba nedostupná“, žádná varovná hláška při funkčním hovoru',
+               'služba nedostupná' in await A.evaluate("__vc.V.turn&&__vc.V.turn.text||''") and 'TURN nedostupný' not in await A.evaluate(BANNER) and 'TURN nedostupný' not in await B.evaluate(BANNER),
+               [await A.evaluate(BANNER), await B.evaluate(BANNER)])
+            g, i = await flows(A); ok('6 služba nedostupná: obraz+zvuk oběma směry přímo', g and all(x['pair'].startswith('host') for x in i), i)
+            await B.click('#vcHang'); ok('6 služba nedostupná: konec u obou', await ended(A, B)); await A.wait_for_timeout(4000)
+            for k in 'ABCD': await P[k]['pg'].evaluate(f"localStorage.setItem('bandapp-test-turn-url','{MOCK}/ice')")
             # ---------- bezpečnost ----------
             for k in 'ABCD':
                 pg = P[k]['pg']
