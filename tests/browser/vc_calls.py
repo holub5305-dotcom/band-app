@@ -140,6 +140,18 @@ async def main():
         ok('bez možnosti spojení: 1:1 hovor po ~50 s skončí se stejnou hláškou, kamera uvolněná', await wait(A, "!__vc.state()&&document.getElementById('videochatApp').innerText.includes('%s')" % MSG, 45000) and await wait(B, "!__vc.state()", 20000))
         await A.reload(); await B.reload(); await A.wait_for_timeout(1500)
         await wait(A, "document.querySelectorAll('#vcPeopleList li').length===2"); await wait(B, "document.querySelectorAll('#vcPeopleList li').length===2")
+        # ---------- 7b) 1.2.5: nabídka spojení vůbec nedorazí (ICE se nikdy nespustí) → OBĚ strany jasně skončí ----------
+        # (1.2.4: limit hlídal jen existující spojení – přijímající strana bez nabídky „připojovala“ donekonečna.)
+        NOOFFER = "(()=>{RTCPeerConnection.prototype.createOffer=function(){return new Promise(()=>{})}})()"
+        await A.evaluate(NOOFFER); await B.evaluate(NOOFFER)
+        await A.click(f'#vcPeopleList li[data-uid="{U["B"]}"] [data-act=video]')
+        await wait(B, "document.getElementById('vcIncoming')"); await B.click('#vcAccept')
+        ok('nabídka nedorazí: po ~20 s hláška u OBOU stran', await wait(A, "(()=>{const b=document.querySelector('#vcCall .vc-banner');return b&&!b.hidden&&b.textContent.includes('%s')})()" % MSG, 35000) and await wait(B, "(()=>{const b=document.querySelector('#vcCall .vc-banner');return b&&!b.hidden&&b.textContent.includes('%s')})()" % MSG, 35000))
+        endA = await wait(A, "!__vc.state()", 50000); endB = await wait(B, "!__vc.state()", 20000)
+        txt = await A.evaluate("document.getElementById('videochatApp').innerText") + await B.evaluate("document.getElementById('videochatApp').innerText")
+        ok('nabídka nedorazí: hovor po ~50 s skončí u obou (žádné nekonečné „Připojuji…“), s hláškou', endA and endB and MSG in txt, txt[-200:])
+        await A.reload(); await B.reload(); await A.wait_for_timeout(1500)
+        await wait(A, "document.querySelectorAll('#vcPeopleList li').length===2"); await wait(B, "document.querySelectorAll('#vcPeopleList li').length===2")
         # ---------- 8) neschválená ----------
         nr = await D.evaluate("(document.getElementById('vcNoRooms')||{}).textContent||''")
         ok('čekající: VIDEOCHAT nenabízí volání', ('jen pro schválené' in nr or 'čeká na schválení' in nr) and await D.locator('#vcPeopleList').count() == 0, nr)

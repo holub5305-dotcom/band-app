@@ -1488,7 +1488,11 @@ async function initJoin(root) {
       if (chatOff) { if (asP) asP.textContent = asText(); return; }
       const chat = h('div'), title = h('h2', { id: 'jRoomTitle', text: '💬 ' + (r.name || 'Skupina') });
       asP = h('p', { class: 'note', 'data-state': 'approved', id: 'jMyNick', text: asText() });
-      fill(root, title, asP, noticeEl(), joinCode(fb.uid), h('div', { class: 'row' }, ned.button), ned.box, chat,
+      // 1.2.5: cesta zpět do aplikace. Nainstalovaná BAND APP tu po otevření pozvánky zůstávala (hovory se volají
+      // z BAND APP → VIDEOCHAT). Příchozí hovory zvoní i tady (stránka teď načítá videochat.js). Žádné automatické přesměrování.
+      const openApp = h('div', { class: 'row', style: 'margin:8px 0' }, btn('primary', '📱 Otevřít BAND APP (Kamarádky a VIDEOCHAT)', () => { location.href = 'index.html' + location.search + '#videochat'; }, { id: 'jOpenApp' }));
+      const callNote = h('p', { class: 'note', id: 'jCallNote', text: 'Videohovory: volat můžeš v BAND APP → VIDEOCHAT. Příchozí hovor zazvoní i na této stránce, když je otevřená.' });
+      fill(root, title, asP, noticeEl(), openApp, callNote, joinCode(fb.uid), h('div', { class: 'row' }, ned.button), ned.box, chat,
         h('div', { class: 'row' },
           btn('secondary', 'Opustit skupinu', async () => { if (!confirm('Opravdu chceš opustit skupinu?')) return; try { await leaveRoom(r.id); } catch (e) { } })));
       chatOff = mountChat(chat, r.id, () => (cur && cur.nick) || my.nick, fb.uid);
