@@ -39,7 +39,7 @@ async def openA(p):
     return c, pg
 MSGS = """(async()=>{const f=await import('./friends.js');const out=await new Promise((res,rej)=>{let u;f.watchMessages('%s',m=>{res(m.map(x=>x.text));setTimeout(()=>u&&u(),0)},rej).then(x=>u=x)});return out})()"""
 SEND = "import('./friends.js').then(f=>f.sendMessage('%s','Laurinka','%s')).then(()=>'ok',e=>e.code||String(e))"
-UID = "import('./friends.js').then(m=>m.connect()).then(f=>f.uid)"
+UID = "import('./friends.js').then(async m=>{if(m.createAccount) await m.createAccount(); return m.connect()}).then(f=>f.uid)"
 IDBN = "indexedDB.databases().then(d=>d.map(x=>x.name).sort())"
 async def wait(pg, js, t=25000):
     try: await pg.wait_for_function(js, timeout=t); return True

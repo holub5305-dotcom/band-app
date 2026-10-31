@@ -46,12 +46,12 @@ async def engine(p, chrome, bt, label):
     gum_ok = 'audio:live' in g and 'video:live' in g
     if gum_ok: ok(f'{label}: getUserMedia s falešnou kamerou a mikrofonem', True, g)
     else: note(f'{label}: getUserMedia s falešnými zařízeními v tomto headless jádru NEPODPOROVÁNO', g)
-    uid = await pg.evaluate("import('./friends.js').then(m=>m.connect()).then(f=>f.uid)")
+    uid = await pg.evaluate("import('./friends.js').then(async m=>{if(m.createAccount) await m.createAccount(); return m.connect()}).then(f=>f.uid)")
     ok(f'{label}: přihlášení Firebase (emulátor)', bool(uid), uid)
     # protistrana Chromium
     cc = await chrome.new_context(permissions=['camera', 'microphone']); await cc.route('**/*', guard)
     A = await cc.new_page(); A.on('pageerror', lambda e: errs.append('chromium ' + str(e)))
-    await A.goto(URL); uA = await A.evaluate("import('./friends.js').then(m=>m.connect()).then(f=>f.uid)")
+    await A.goto(URL); uA = await A.evaluate("import('./friends.js').then(async m=>{if(m.createAccount) await m.createAccount(); return m.connect()}).then(f=>f.uid)")
     room = 'engine-' + bt.name
     seed = {'room': room, 'name': 'Kamarádky', 'owner': uA, 'members': [{'uid': uA, 'nick': 'Laurinka', 'status': 'owner'}, {'uid': uid, 'nick': 'Amy', 'status': 'approved'}]}
     subprocess.run(['node', SEED, RULES, json.dumps(seed)], capture_output=True, text=True, cwd=SEED_CWD)

@@ -36,7 +36,7 @@ async def main():
             pg.on('pageerror', lambda e, n=name: ERRS[n].append(str(e)))
             pg.on('dialog', lambda d: asyncio.ensure_future(d.accept()))
             await pg.goto(BASE); await pg.wait_for_timeout(800)
-            uid = await pg.evaluate("import('./friends.js').then(m=>m.connect()).then(f=>f.uid)")
+            uid = await pg.evaluate("import('./friends.js').then(async m=>{if(m.createAccount) await m.createAccount(); return m.connect()}).then(f=>f.uid)")
             P[name] = {'c': c, 'pg': pg, 'uid': uid}
         A, B, C, D = (P[k]['pg'] for k in 'ABCD'); U = {k: P[k]['uid'] for k in 'ABCD'}
         room = 'roomTest1'
@@ -142,7 +142,7 @@ async def main():
         await wait(A, "document.querySelectorAll('#vcPeopleList li').length===2"); await wait(B, "document.querySelectorAll('#vcPeopleList li').length===2")
         # ---------- 8) neschválená ----------
         nr = await D.evaluate("(document.getElementById('vcNoRooms')||{}).textContent||''")
-        ok('čekající: VIDEOCHAT nenabízí volání', 'jen pro schválené' in nr and await D.locator('#vcPeopleList').count() == 0, nr)
+        ok('čekající: VIDEOCHAT nenabízí volání', ('jen pro schválené' in nr or 'čeká na schválení' in nr) and await D.locator('#vcPeopleList').count() == 0, nr)
         deny = await D.evaluate("""(async()=>{const fb=await (await import('./friends.js')).connect();const F=fb.F,db=fb.db,out={};
           const t=async(k,f)=>{try{await f();out[k]='ALLOWED'}catch(e){out[k]=e.code}};
           await t('create',()=>F.setDoc(F.doc(F.collection(db,'rooms','%s','calls')),{createdBy:fb.uid,nick:'Čekající',kind:'video',mode:'direct',participants:[fb.uid,'%s'],status:'ringing',createdAt:F.serverTimestamp(),expiresAt:F.Timestamp.fromMillis(Date.now()+3600e3)}));
