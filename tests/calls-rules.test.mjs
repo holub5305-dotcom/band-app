@@ -134,3 +134,43 @@ describe('signalizace (SDP)', () => {
     await assertSucceeds(deleteDoc(S(db('amy'), 's1')));
   });
 });
+describe('přístupová matice: čekající / zablokovaná / cizí / nepřihlášená – NIC z hovorů (i když by byly v seznamu účastnic)', () => {
+  beforeEach(async () => {
+    await env.withSecurityRulesDisabled(async ctx => {
+      const fs = ctx.firestore(), now = Timestamp.now(), parts = ['owner', 'amy', 'pend', 'bad', 'out'];
+      await setDoc(doc(fs, `rooms/${R}/calls/mx`), { ...callData('owner', parts), mode: 'group', createdAt: now });
+      await setDoc(doc(fs, `rooms/${R}/calls/mxe`), { ...callData('owner', parts), mode: 'group', createdAt: now, status: 'ended', endedAt: now });
+      await setDoc(doc(fs, `rooms/${R}/calls/mx/peers/owner`), { ...peer('owner'), at: now });
+      for (const u of ['pend', 'bad', 'out']) await setDoc(doc(fs, `rooms/${R}/calls/mx/signals/to-${u}`), { ...sig('owner', u), createdAt: now });
+    });
+  });
+  for (const who of ['pend', 'bad', 'out', 'anon']) {
+    it(`${who}: založit, číst, vypsat, měnit, mazat hovor; připojit se / číst účastnice; posílat / číst / mazat signalizaci → vše odmítnuto`, async () => {
+      const f = who === 'anon' ? anon() : db(who), u = who === 'anon' ? 'pend' : who;
+      const M = id => doc(f, `rooms/${R}/calls/${id}`);
+      await assertFails(setDoc(doc(f, `rooms/${R}/calls/new-${who}`), callData(u, [u, 'amy'])));
+      await assertFails(getDoc(M('mx'))); await assertFails(getDoc(M('c1')));
+      await assertFails(getDocs(query(collection(f, `rooms/${R}/calls`), where('participants', 'array-contains', u))));
+      await assertFails(getDocs(collection(f, `rooms/${R}/calls`)));
+      await assertFails(updateDoc(M('mx'), { status: 'active' }));
+      await assertFails(updateDoc(M('mx'), { status: 'ended', endedAt: serverTimestamp() }));
+      await assertFails(deleteDoc(M('mxe')));
+      await assertFails(setDoc(doc(f, `rooms/${R}/calls/mx/peers/${u}`), peer(u)));
+      await assertFails(setDoc(doc(f, `rooms/${R}/calls/mx/peers/${u}`), peer(u, { state: 'declined' })));
+      await assertFails(getDoc(doc(f, `rooms/${R}/calls/mx/peers/owner`)));
+      await assertFails(getDocs(collection(f, `rooms/${R}/calls/mx/peers`)));
+      await assertFails(deleteDoc(doc(f, `rooms/${R}/calls/mx/peers/owner`)));
+      await assertFails(setDoc(doc(f, `rooms/${R}/calls/mx/signals/x-${who}`), sig(u, 'owner')));
+      await assertFails(getDoc(doc(f, `rooms/${R}/calls/mx/signals/to-${u}`)));
+      await assertFails(getDocs(query(collection(f, `rooms/${R}/calls/mx/signals`), where('to', '==', u))));
+      await assertFails(deleteDoc(doc(f, `rooms/${R}/calls/mx/signals/to-${u}`)));
+    });
+  }
+  it('kontrola: schválená účastnice (amy) stejné operace smí (test není falešně přísný)', async () => {
+    const f = db('amy');
+    await assertSucceeds(getDoc(doc(f, `rooms/${R}/calls/mx`)));
+    await assertSucceeds(setDoc(doc(f, `rooms/${R}/calls/mx/peers/amy`), peer('amy')));
+    await assertSucceeds(getDocs(collection(f, `rooms/${R}/calls/mx/peers`)));
+    await assertSucceeds(setDoc(doc(f, `rooms/${R}/calls/mx/signals/x-amy`), sig('amy', 'owner')));
+  });
+});

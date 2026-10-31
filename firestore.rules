@@ -293,7 +293,7 @@ service cloud.firestore {
           );
 
         // Úklid: účastnice smaže ukončený nebo prošlý hovor.
-        allow delete: if signedIn() && me() in resource.data.participants
+        allow delete: if isApproved(roomId) && me() in resource.data.participants
           && (resource.data.status == 'ended' || request.time > resource.data.expiresAt);
 
         // Stav účastnice v hovoru (připojená / odmítla / obsazeno / odešla, kamera a mikrofon zapnuté).
@@ -313,7 +313,7 @@ service cloud.firestore {
             && request.resource.data.at == request.time
             && (request.resource.data.state != 'joined'
               || (callDoc(roomId, callId).status != 'ended' && request.time < callDoc(roomId, callId).expiresAt));
-          allow delete: if signedIn() && uid == me();
+          allow delete: if isApproved(roomId) && uid == me();
         }
 
         // Signalizace WebRTC (nabídka/odpověď SDP) od účastnice k účastnici. Číst smí jen odesílatelka a příjemkyně.
@@ -337,7 +337,7 @@ service cloud.firestore {
             && request.resource.data.sdp is string && request.resource.data.sdp.size() <= 30000
             && request.resource.data.createdAt == request.time;
           allow update: if false;
-          allow delete: if signedIn() && (resource.data.to == me() || resource.data.from == me());
+          allow delete: if isApproved(roomId) && (resource.data.to == me() || resource.data.from == me());
         }
       }
     }
