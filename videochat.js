@@ -14,7 +14,7 @@ const RING_MS = 45e3, RING_WINDOW_MS = 60e3, CALL_TTL_MS = 3 * 3600e3, HEARTBEAT
   NOCONN_WARN_MS = 20e3, NOCONN_END_MS = 50e3;
 const NOCONN_MSG = 'Spojení se nepodařilo – zkuste Wi-Fi.';   // síť nejspíš blokuje přímé spojení (bez TURN)
 const NOTIFY_TAG = 'bandapp-hovor';
-export const APP_VERSION = '1.2.3';
+export const APP_VERSION = '1.2.4';
 const RETRY_MS = 15e3, START_CHECK_MS = 15e3;
 const $ = id => document.getElementById(id);
 const rnd = () => { const b = new Uint8Array(9); crypto.getRandomValues(b); return Array.from(b, x => x.toString(16).padStart(2, '0')).join(''); };
