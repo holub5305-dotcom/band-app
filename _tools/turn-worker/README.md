@@ -1,46 +1,37 @@
-# BAND APP – volitelný TURN (Cloudflare Realtime, bezplatný tarif)
+# BAND APP – TURN worker (Cloudflare Workers Free, bez platební karty)
 
-**Výchozí stav: TURN je VYPNUTÝ.** BAND APP 1.2.0 funguje jen se STUN. Většina hovorů na Wi-Fi se spojí;
-na některých mobilních sítích nebo školních/firemních Wi-Fi se přímé spojení nenaváže a aplikace po 20 s
-ukáže (od 1.2.7) „Spojení se nepodařilo navázat (ICE selhalo) – pravděpodobně mobilní síť bez TURN serveru…“
-(1:1 hovor po 50 s skončí se stejnou hláškou). Diagnostika 🛠 v hovoru pak ukáže „TURN ne“ a kandidáty bez „relay“.
+Malá služba, která **jen schváleným a nezablokovaným členkám** skupiny vydá adresy TURN serveru
+s přihlašovacími údaji. Údaje jsou uložené **jen jako tajemství Workeru v Cloudflare** – nikdy
+v aplikaci, nikdy v tomto (veřejném) repozitáři.
 
-Tato složka (začíná podtržítkem, takže ji GitHub Pages **nezveřejňuje**) obsahuje hotovou malou službu, která
-přihlášené **schválené** člence vydá TURN údaje platné jen 4 h. Nic neukládá ani neloguje; obraz a zvuk
-jdou dál šifrovaně (DTLS-SRTP) – Cloudflare je nevidí ani neslyší.
+## Jak ověřuje
+1. `Authorization: Bearer <Firebase ID token>` – podpis RS256 proti veřejným klíčům Google, `aud`/`iss` = `FIREBASE_PROJECT_ID`, `exp`, `iat`.
+   Token z jiného projektu (např. produkční token na testovací worker) je odmítnut.
+2. `?room=<id skupiny>` – worker se tokenem **uživatelky** zeptá Firestore na seznam členek; pravidla
+   (`allow list: if isApproved(roomId)`) to povolí jen schválené/zakladatelce, která **není zablokovaná**.
+   Worker proto nepotřebuje žádný servisní účet Firebase.
+3. CORS jen `https://holub5305-dotcom.github.io` (BAND APP i náhled `/band-app-preview-1p/` mají stejný origin).
+4. Limit žádostí na uid (`RATE_PER_10MIN`, výchozí 30 / 10 min; v paměti instance, případně vazba `RL`).
+5. Odpovědi `cache-control: no-store`; žádné logy (observability vypnuta, žádné `console.*`); chyby nikdy neobsahují údaje.
 
-## Cena
-- Cloudflare Workers Free: 100 000 požadavků/den zdarma (BAND APP pošle ~1 požadavek na hovor).
-- Cloudflare Realtime TURN: prvních **1 000 GB/měsíc zdarma**, potom 0,05 USD/GB. Hovor 1:1 přes TURN
-  spotřebuje cca 0,3–0,5 GB/h, takže rodinné použití se do limitu vejde s velkou rezervou.
-  TURN se použije jen tam, kde přímé spojení nejde.
-- Pokud Cloudflare při zapnutí Realtime požádá o platební kartu, **zastav se a rozhodni** – bez karty a
-  bez schválení nic nezapínej.
+## Režimy
+| TURN_MODE | Tajemství | Poznámka |
+|---|---|---|
+| `static` (výchozí) | `TURN_USERNAME`, `TURN_PASSWORD` | ExpressTURN Free – `free.expressturn.com:3478` UDP/TCP (bez TLS/443). |
+| `cloudflare` | `TURN_KEY_ID`, `TURN_KEY_API_TOKEN` | Cloudflare Realtime TURN – vyžaduje platební metodu, **nepoužívat bez souhlasu**. |
 
-## Postup (jen po schválení, ~15 minut)
-1. Účet Cloudflare (zdarma): https://dash.cloudflare.com/sign-up
-2. Dashboard → **Realtime** → **TURN Server** → *Create* → pojmenuj „bandapp“. Zobrazí se
-   **Turn Token ID** a **API Token** – API token se ukáže jen jednou, ulož si ho (správce hesel).
-3. Na počítači s Node.js:
-   ```
-   cd _tools/turn-worker
-   npx wrangler login
-   npx wrangler secret put TURN_KEY_ID          # vlož Turn Token ID
-   npx wrangler secret put TURN_KEY_API_TOKEN   # vlož API Token
-   npx wrangler deploy
-   ```
-   Wrangler vypíše adresu, např. `https://bandapp-turn.<účet>.workers.dev`.
-4. Zkouška (musí vrátit 401 – bez přihlášení nic nedostaneš):
-   `curl -i https://bandapp-turn.<účet>.workers.dev/ice`
-5. Nejdřív v **testovacím náhledu**: v `rtc-config.js` náhledu nastav
-   `TURN_CREDENTIALS_URL = 'https://bandapp-turn.<účet>.workers.dev/ice'` a vyzkoušej hovor na mobilních datech.
-6. Pro produkci změň ve `wrangler.toml` `FIREBASE_PROJECT_ID = "band-app-7c9ca"`, znovu `npx wrangler deploy`
-   (nebo nasaď druhý Worker), a stejnou adresu vlož do `rtc-config.js` v produkční větvi (běžná aktualizace
-   aplikace; SW cache je třeba zvýšit o 1).
+Bez tajemství vrací `/ice` chybu **503 `not_configured`** a `GET /health` ukazuje `"configured": false`.
 
-## Bezpečnost
-- Údaje dostane jen držitelka platného Firebase ID tokenu daného projektu, která je ve skupině `room`
-  schválená a nezablokovaná (ověřuje přímo Firestore svými pravidly).
-- CORS jen pro `https://holub5305-dotcom.github.io`.
-- Údaje vyprší po `TTL_SECONDS` (4 h). Odebrání TURN klíče v Cloudflare vše okamžitě zneplatní.
-- Vypnutí: `TURN_CREDENTIALS_URL = ''` v `rtc-config.js` (aplikace se vrátí ke STUN) nebo `npx wrangler delete`.
+## API
+- `GET /health` → `{ ok, service, mode, configured, project }` (bez přihlášení, bez údajů)
+- `GET /ice?room=<id>` + `Authorization: Bearer <ID token>` → `{ iceServers, ttl, mode }`
+- Chyby: 401 `auth`, 403 `member`/`origin`, 429 `rate`, 503 `not_configured`, 502 `turn_upstream`
+
+## Testy
+`node test-worker.mjs ./worker.js` – 32 kontrol bez sítě (oba režimy, odmítnutí cizích/neschválených/zablokovaných, únik tajemství).
+
+## Nasazení (jen test)
+Testovací worker `bandapp-turn-test` (projekt `band-app-test-9fc3e`). Tajemství zadává **jen Vladimír** v Cloudflare Dashboardu
+(Workers & Pages → bandapp-turn-test → Settings → Variables and Secrets → Add → Type: Secret) nebo `npx wrangler secret put`.
+Při dalším nahrání kódu přes API se posílá `keep_bindings: ["secret_text"]`, aby se tajemství nesmazala.
+Produkční worker je samostatný: `bandapp-turn-prod` (`wrangler.prod.toml`, projekt `band-app-7c9ca`, vlastní tajemství zadaná majitelem) – nasazuje se až po souhlasu, viz docs/VYDANI-1.3.0.md.
