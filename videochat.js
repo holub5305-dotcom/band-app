@@ -17,9 +17,13 @@ const NOCONN_MSG = 'Spojení se nepodařilo – zkuste Wi-Fi.';   // síť nejsp
 // 1.3.0: adresa služby TURN (Cloudflare Worker). V automatických testech (jen localhost + ?emulator=1) ji test smí
 // podstrčit přes localStorage (místní testovací server) – ve skutečné aplikaci se bere jen z rtc-config.js.
 const turnUrl = () => { if (!isEmulator) return TURN_CREDENTIALS_URL; try { return localStorage.getItem('bandapp-test-turn-url') || ''; } catch (e) { return ''; } };
+// Jen automatický test (emulátor): „přímá cesta nefunguje“ – první pokus pošle popis bez kandidátů; vynucený pokus přes TURN je pošle.
+const testNoDirect = () => { if (!isEmulator) return false; try { return localStorage.getItem('bandapp-test-no-direct') === '1'; } catch (e) { return false; } };
+const outSdp = entry => { const d = entry.pc.localDescription.sdp; return testNoDirect() && !entry.forced ? d.split(/\r?\n/).filter(l => !/^a=(candidate|end-of-candidates)/.test(l)).join('\r\n') : d; };
 const testRelayOnly = () => { if (!isEmulator) return false; try { return localStorage.getItem('bandapp-test-relay-only') === '1'; } catch (e) { return false; } };
 const turnOn = () => !!turnUrl() || (Array.isArray(STATIC_TURN_SERVERS) && STATIC_TURN_SERVERS.length > 0);
 const TURN_DOWN_MSG = 'TURN nedostupný – zkuste Wi-Fi.';
+const RELAY_TRIES = 2;   // max. pokusů vynucených přes TURN po selhání přímé cesty
 // TURN je zapnutý, ale nefunguje: služba nevrátila údaje, nebo telefon nedostal žádného „relay“ kandidáta.
 const turnDown = e => turnOn() && (!!(V.turn && V.turn.ok === false) || !!(e && e.noRelay));
 const ICE_FAIL_MSG = e => turnDown(e) ? TURN_DOWN_MSG : turnOn() ? 'Spojení se nepodařilo navázat (ICE selhalo) ani přes TURN server. Zkuste Wi-Fi.'
@@ -177,14 +181,14 @@ async function iceServers(roomId, force) {
       const list = base.concat(extra), relay = hasTurn(extra);
       const ttl = Math.min(10 * 60e3, Math.max(60e3, (Number(j.ttl) || 600) * 1000 / 2));
       V.iceCache = { room, list, until: Date.now() + ttl };
-      V.turn = { ok: relay, at: Date.now(), text: relay ? 'údaje načtené' : 'služba nevrátila TURN server' };
+      V.turn = { ok: relay, at: Date.now(), text: (relay ? 'údaje načtené' : 'služba nevrátila TURN server') + ' · HTTP ' + r.status };
       if (!relay) V.iceCache.until = Date.now() + 20e3;
       return list;
     } catch (e) {
       const st = e && e.status;
       const why = st === 503 ? 'TURN na serveru není nastavený' : st === 403 ? 'přístup odmítnut (jen schválené členky)' : st === 401 ? 'přihlášení neověřeno'
         : st === 429 ? 'příliš mnoho žádostí' : e && e.name === 'AbortError' ? 'služba neodpověděla včas' : st ? 'chyba služby ' + st : 'služba nedostupná';
-      V.turn = { ok: false, at: Date.now(), text: why };
+      V.turn = { ok: false, at: Date.now(), text: why + (st ? ' · HTTP ' + st : '') };
       V.iceCache = { room, list: base, until: Date.now() + 20e3 };   // krátce si pamatovat neúspěch (žádné bušení do služby)
       return base;                                              // hovor zkusí aspoň přímé spojení
     } finally { clearTimeout(tm); }
@@ -605,8 +609,11 @@ async function newPc(s, uid) {
   const ice = await iceServers(s.roomId);
   const cfg = { iceServers: ice, bundlePolicy: 'max-bundle' };
   if (testRelayOnly()) cfg.iceTransportPolicy = 'relay';   // jen automatický test „přímá cesta zablokovaná“ (emulátor)
+  // 1.3.0 oprava: když přímé spojení selhalo, další pokus jen přes TURN (relay) – omezeně, max RELAY_TRIES×.
+  const forced = !!(s.forceRelay && s.forceRelay.get(uid) && hasTurn(ice));
+  if (forced) cfg.iceTransportPolicy = 'relay';
   const pc = new RTCPeerConnection(cfg);
-  const entry = { pc, turn: hasTurn(ice), noRelay: false, relay: null, discT: null, sid: '', remoteEpoch: '', stream: new MediaStream(), state: 'new', lostAt: 0, offerer: V.fb.uid < uid, born: Date.now(),
+  const entry = { pc, turn: hasTurn(ice), forced, noRelay: false, relay: null, discT: null, sid: '', remoteEpoch: '', stream: new MediaStream(), state: 'new', lostAt: 0, offerer: V.fb.uid < uid, born: Date.now(),
     cand: { local: candZero(), remote: candZero() }, st: null, err: '' };
   // 1.2.7 diagnostika: jen TYPY kandidátů (host/srflx/relay), nikdy adresy.
   pc.onicecandidate = e => { if (e.candidate) { const t = candType(e.candidate); entry.cand.local[t] = (entry.cand.local[t] || 0) + 1; } };
@@ -668,7 +675,7 @@ async function makeOffer(s, uid, epoch) {
     limitBitrate(s, entry);
     await gathered(entry);
     if (s.ended || s.pcs.get(uid) !== entry) return;
-    await sendSignal(s, uid, 'offer', entry.sid, entry.pc.localDescription.sdp);
+    await sendSignal(s, uid, 'offer', entry.sid, outSdp(entry));
     if (!connected(entry)) noteCall(s.diag, { phase: 'nabídka odeslána' });
   } catch (e) { const t = 'nabídka selhala (' + errCode(e) + ')'; entry.err = t; s.sigErr = t; noteCall(s.diag, { phase: t }); entry.lostAt = entry.lostAt || Date.now(); }
   renderCall(s);
@@ -686,7 +693,7 @@ async function onSignal(s, id, d) {
       limitBitrate(s, entry);
       await gathered(entry);
       if (s.ended || s.pcs.get(d.from) !== entry) return;
-      await sendSignal(s, d.from, 'answer', d.sid, entry.pc.localDescription.sdp);
+      await sendSignal(s, d.from, 'answer', d.sid, outSdp(entry));
       if (!connected(entry)) noteCall(s.diag, { phase: 'nabídka přijata, odpověď odeslána' });
     } else if (d.type === 'answer') {
       const entry = s.pcs.get(d.from);
@@ -707,6 +714,12 @@ function reconnect(s, uid) {
   if (entry && Date.now() - (entry.lastRestart || 0) < 8e3) return;
   if (entry) entry.lastRestart = Date.now();
   if (V.turn && V.turn.ok === false) V.iceCache = null;   // 1.3.0: TURN předtím selhal → při obnově zkusit znovu
+  // 1.3.0 oprava: spojení se nenavázalo a TURN je k dispozici → další pokus vynutit cestu přes TURN (relay). Omezeně.
+  if (entry && entry.turn && !s.everConn.has(uid) && !connected(entry)) {
+    const fr = s.forceRelay || (s.forceRelay = new Map()), n = fr.get(uid) || 0;
+    if (n < RELAY_TRIES) { fr.set(uid, n + 1); noteCall(s.diag, { phase: 'přímé spojení nejde → pokus ' + (n + 1) + ' jen přes TURN' }); banner(s, 'Přímé spojení nejde – zkouším přes TURN server…', 4000); }
+    else if (n === RELAY_TRIES) { fr.set(uid, 0); }   // po vyčerpání zase zkusit i přímou cestu
+  }
   if (V.fb.uid < uid) makeOffer(s, uid, p.epoch).then(() => { const e = s.pcs.get(uid); if (e) e.lastRestart = Date.now(); });
   else { s.epoch = rnd(); writePeer(s, 'joined').catch(() => { }); }
 }
@@ -746,7 +759,7 @@ function tick(s) {
     // 1.3.0: spojení (i obnovované) nevzniká a TURN nefunguje → jasně říct „TURN nedostupný – zkuste Wi-Fi“.
     if (!connected(e) && turnDown(e) && (e.lostAt || now - e.born > 10e3) && !s.turnWarned && e.hadRemote) { s.turnWarned = true; banner(s, TURN_DOWN_MSG); }
     // 1.3.0: obnovované spojení, které se ani po 15 s nenavázalo (např. TURN byl chvíli nedostupný), se zkouší znovu.
-    if (!connected(e) && !e.lostAt && e.hadRemote && now - e.born > 15e3 && (s.everConn.has(uid) || e.noRelay)) e.lostAt = e.born;
+    if (!connected(e) && !e.lostAt && e.hadRemote && now - e.born > 15e3 && (s.everConn.has(uid) || e.noRelay || (e.turn && !e.forced))) e.lostAt = e.born;
     if (!connected(e) && e.lostAt && now - e.lostAt > 6e3) reconnect(s, uid);
     const stale = now - (s.seen.get(uid) || 0) > STALE_MS;
     if (!connected(e) && e.lostAt && now - e.lostAt > LOST_MS && stale) {
@@ -1075,7 +1088,7 @@ function playState(s, uid) {
   if (!t.v.srcObject.getTracks().some(x => x.readyState === 'live' && !x.muted)) return 'čeká na data (nic nepřichází)';
   return t.v.dataset.play || (t.v.paused ? 'čeká' : 'hraje');
 }
-const pathText = e => { const st = e && e.st; return !st || !st.pair ? '–' : st.relay ? 'přes TURN (relay)' : 'přímé spojení'; };
+const pathText = e => { const st = e && e.st; return !st || !st.pair ? (e && e.forced ? '– (zkouším jen přes TURN)' : '–') : st.relay ? 'přes TURN (relay)' + (e.forced ? ' – vynuceno po selhání přímé cesty' : '') : 'přímé spojení'; };
 const iceOf = e => e.finalIce || e.pc.iceConnectionState, connOf = e => e.finalConn || e.pc.connectionState || '–';
 function verdict(s, uid, summary) {
   const p = s.peers.get(uid) || {}, e = s.pcs.get(uid) || (summary && s.closed && s.closed.get(uid));
@@ -1201,14 +1214,44 @@ async function fillDiag() {
     ['Poslední odchozí hovor', callRow(V.lastOut)],
     ['Poslední příchozí hovor', callRow(V.lastIn)],
     ['TURN server', turnText()],
+    ['Test TURN', V.turnTest ? V.turnTest.text + ' (před ' + ago(V.turnTest.at) + ')' : 'zatím nespuštěn – tlačítko „Otestovat TURN“ níže'],
     ...(V.session ? [['Probíhající hovor – média', mediaSummary(V.session).text]] : []),
     ['Poslední hovor – média', V.lastMedia ? 'před ' + ago(V.lastMedia.at) + ' · ' + V.lastMedia.text : 'žádný (od otevření aplikace)'],
     ['Upozornění', typeof Notification === 'undefined' ? 'nepodporováno' : Notification.permission === 'granted' ? 'povolena' : 'nepovolena']
   ];
   el.querySelector('#vcDiagBody').replaceChildren(h('dl', {}, ...rows.flatMap(([k, v]) => [h('dt', { text: k }), h('dd', { text: v })])),
-    h('div', { class: 'vc-act' }, h('button', { type: 'button', class: 'secondary', id: 'vcDiagRetry', disabled: !!V.retrying, onclick: retryAuth }, V.retrying ? '⏳ Připojuji…' : '↻ Znovu připojit hovory')),
+    h('div', { class: 'vc-act' }, h('button', { type: 'button', class: 'secondary', id: 'vcDiagRetry', disabled: !!V.retrying, onclick: retryAuth }, V.retrying ? '⏳ Připojuji…' : '↻ Znovu připojit hovory'),
+      h('button', { type: 'button', class: 'secondary', id: 'vcTurnTest', disabled: !!V.turnTesting, onclick: turnSelfTest }, V.turnTesting ? '⏳ Testuji TURN…' : '🧪 Otestovat TURN')),
     V.retryMsg ? h('p', { class: V.retryMsg.startsWith('✅') ? 'note' : 'vc-err', role: 'status', id: 'vcRetryMsg', 'data-state': V.retryState || '', text: V.retryMsg }) : null,
     h('p', { class: 'note', text: 'Bez osobních údajů – nic se nikam neodesílá. Při potížích pošli tátovi/správci snímek této tabulky.' }));
+}
+/* 1.3.0: „Otestovat TURN“ – bez hovoru a bez kamery: načte údaje přes službu (jen schválená členka skupiny)
+ * a zkusí získat „relay“ kandidáty jen přes TURN (UDP i TCP). Ukáže jen počty a kód chyby – nikdy adresy ani hesla. */
+async function turnSelfTest() {
+  if (V.turnTesting) return;
+  const done = text => { V.turnTest = { text, at: Date.now() }; V.turnTesting = false; fillDiag(); };
+  if (!turnOn()) return done('TURN v této verzi není zapnutý (jen STUN)');
+  const room = V.roomId || (approvedRooms()[0] || {}).id;
+  if (!room) return done('❌ nejde – účet nemá schválenou skupinu');
+  V.turnTesting = true; fillDiag();
+  let pc = null; const t0 = Date.now();
+  try {
+    V.iceCache = null;
+    const ice = await iceServers(room, true), turn = ice.filter(x => [].concat(x.urls || []).some(u => /^turns?:/.test(String(u))));
+    if (!turn.length) return done('❌ údaje TURN se nenačetly: ' + ((V.turn && V.turn.text) || 'neznámá chyba'));
+    pc = new RTCPeerConnection({ iceServers: turn, iceTransportPolicy: 'relay' });
+    const cnt = { udp: 0, tcp: 0, tls: 0, x: 0 }, errs = new Set();
+    pc.onicecandidateerror = e => { const u = String(e.url || ''), tr = /transport=tcp/.test(u) ? 'tcp' : /^turns:/.test(u) ? 'tls' : 'udp'; errs.add(tr + ' ' + (e.errorCode || '?')); };
+    pc.createDataChannel('t');
+    await pc.setLocalDescription(await pc.createOffer());
+    await new Promise(res => { const tm = setTimeout(res, 10e3); pc.onicegatheringstatechange = () => { if (pc.iceGatheringState === 'complete') { clearTimeout(tm); res(); } }; });
+    try { (await pc.getStats()).forEach(x => { if (x.type === 'local-candidate' && x.candidateType === 'relay') { const k = String(x.relayProtocol || '').toLowerCase(); cnt[k in cnt ? k : 'x']++; } }); } catch (e) { }
+    if (!cnt.udp && !cnt.tcp && !cnt.tls && !cnt.x) cnt.x = candFromSdp(pc.localDescription && pc.localDescription.sdp).relay || 0;
+    const sec = ((Date.now() - t0) / 1000).toFixed(1).replace('.', ','), tot = cnt.udp + cnt.tcp + cnt.tls + cnt.x;
+    const counts = 'relay kandidáti UDP ' + cnt.udp + ' · TCP ' + cnt.tcp + (cnt.tls ? ' · TLS ' + cnt.tls : '') + (cnt.x ? ' · nezjištěný přenos ' + cnt.x : '');
+    done((tot ? '✅ TURN funguje – ' : '❌ TURN neodpověděl – ') + counts + ' · ' + sec + ' s' + (!tot && errs.size ? ' · chyby: ' + [...errs].join(', ') : ''));
+  } catch (e) { done('❌ test selhal (' + errCode(e) + ')'); }
+  finally { try { pc && pc.close(); } catch (e) { } V.turnTesting = false; }
 }
 /* 1.2.6: „Znovu připojit hovory“ – viditelně: ověří přihlášení u Firebase (obnova tokenu), znovu spustí naslouchání
  * a napíše výsledek. Nikdy nezakládá nový účet a nic nemaže. */

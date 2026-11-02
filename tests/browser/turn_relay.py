@@ -166,7 +166,7 @@ async def main():
             rang, _ = await call('A', 'B'); ok('6 služba 503: B zvoní', rang)
             ok('6 služba 503: náhradní přímé spojení funguje', await wait(A, CONN % 1, 30000) and await wait(B, CONN % 1, 30000))
             await A.click('#vcDiagBtn'); await wait(A, "(" + DIAG + ").includes('Cesta: přímé spojení')", 15000); t = await A.evaluate(DIAG)
-            ok('6 služba 503: diagnostika „TURN … nedostupný (TURN na serveru není nastavený)“ + Cesta přímé', 'nedostupný (TURN na serveru není nastavený)' in t and 'Cesta: přímé spojení' in t, t[:900])
+            ok('6 služba 503: diagnostika „TURN … nedostupný (TURN na serveru není nastavený)“ + Cesta přímé', 'nedostupný (TURN na serveru není nastavený · HTTP 503)' in t and 'Cesta: přímé spojení' in t, t[:900])
             await A.click('#vcDiagBtn'); await A.click('#vcHang'); ok('6 služba 503: konec u obou', await ended(A, B)); await A.wait_for_timeout(4000)
             await relay_only(True, 'AB'); await reset_cache()
             rang, _ = await call('B', 'A')
@@ -190,6 +190,39 @@ async def main():
             g, i = await flows(A); ok('6 služba nedostupná: obraz+zvuk oběma směry přímo', g and all(x['pair'].startswith('host') for x in i), i)
             await B.click('#vcHang'); ok('6 služba nedostupná: konec u obou', await ended(A, B)); await A.wait_for_timeout(4000)
             for k in 'ABCD': await P[k]['pg'].evaluate(f"localStorage.setItem('bandapp-test-turn-url','{MOCK}/ice')")
+            # ---------- 7) 🛠 „Otestovat TURN“ (bez hovoru) ----------
+            TT = "(document.getElementById('vcDiag')||{}).innerText||''"
+            async def selftest(pg):
+                await pg.evaluate("(()=>{const d=document.getElementById('vcDiag');if(d&&!d.open)d.querySelector('summary').click()})()")
+                await wait(pg, "!!document.getElementById('vcTurnTest')", 10000)
+                await pg.evaluate("__vc.V.turnTest=null"); await pg.click('#vcTurnTest')
+                await wait(pg, "!!(__vc.V.turnTest)&&!__vc.V.turnTesting", 25000); await pg.wait_for_timeout(300)
+                return await pg.evaluate("__vc.V.turnTest&&__vc.V.turnTest.text||''"), await pg.evaluate(TT)
+            await reset_cache(); mock('/_mode?m=ok')
+            r, t = await selftest(A)
+            ok('7 test TURN: ✅ relay kandidáti přes UDP i TCP (místní coturn)', r.startswith('✅ TURN funguje') and re.search(r'UDP [1-9]', r) and re.search(r'TCP [1-9]', r), r)
+            ok('7 test TURN: výsledek v diagnostice, bez jména/hesla a IP adres', 'Test TURN' in t and r in t and TUSER not in t and TPASS not in t and not re.search(r'\b\d{1,3}(\.\d{1,3}){3}\b', t), t[-600:])
+            ok('7 test TURN: stav načtení „údaje načtené · HTTP 200“', 'údaje načtené · HTTP 200' in t, t[-600:])
+            mock('/_mode?m=503'); r, t = await selftest(A)
+            ok('7 test TURN, služba 503: ❌ s důvodem a HTTP kódem', r.startswith('❌ údaje TURN se nenačetly') and 'HTTP 503' in r, r)
+            mock('/_mode?m=ok'); coturn_stop(); await A.wait_for_timeout(500); r, t = await selftest(A)
+            ok('7 test TURN, TURN server nedostupný: ❌ 0 relay kandidátů', r.startswith('❌ TURN neodpověděl') and 'UDP 0' in r and 'TCP 0' in r, r)
+            coturn_start(); await A.wait_for_timeout(1500)
+            await A.evaluate("(()=>{const d=document.getElementById('vcDiag');if(d&&d.open)d.querySelector('summary').click()})()")
+            # ---------- 8) přímá cesta nefunguje → automaticky nový pokus jen přes TURN ----------
+            await reset_cache()
+            for k in 'AB': await P[k]['pg'].evaluate("localStorage.setItem('bandapp-test-no-direct','1')")
+            t0 = time.time(); rang, _ = await call('A', 'B'); ok('8 bez přímé cesty: B zvoní', rang)
+            ok('8 bez přímé cesty: po selhání se spojí přes TURN (automatický pokus jen relay)', await wait(A, CONN % 1, 50000) and await wait(B, CONN % 1, 20000), round(time.time() - t0))
+            await A.wait_for_timeout(2500)
+            g, i = await flows(A); ok('8 bez přímé cesty: obraz+zvuk oběma směry přes relay', g and all('relay' in x['pair'] for x in i), i)
+            fa = await A.evaluate("JSON.stringify([...(__vc.V.session.forceRelay||new Map())])"); fb = await B.evaluate("JSON.stringify([...(__vc.V.session.forceRelay||new Map())])")
+            ok('8 bez přímé cesty: vynucený relay pokus zaznamenán (omezeně, max 2)', any(re.search(r'",[12]\]', x) for x in (fa, fb)), [fa, fb])
+            await A.click('#vcDiagBtn'); t = await A.evaluate(DIAG); await A.click('#vcDiagBtn')
+            ok('8 bez přímé cesty: diagnostika „Cesta: přes TURN (relay)“', 'Cesta: přes TURN (relay)' in t, t[:600])
+            await A.click('#vcHang'); ok('8 bez přímé cesty: konec u obou', await ended(A, B))
+            for k in 'AB': await P[k]['pg'].evaluate("localStorage.removeItem('bandapp-test-no-direct')")
+            await A.wait_for_timeout(3000)
             # ---------- bezpečnost ----------
             for k in 'ABCD':
                 pg = P[k]['pg']
