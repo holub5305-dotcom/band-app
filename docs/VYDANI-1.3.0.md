@@ -66,3 +66,10 @@ relay scénáře 2, 4, 5 prošly). Živě (testovací projekt): Worker vrací TU
 Skutečný přenos přes ExpressTURN (prostředí testů propouští jen HTTP(S) – TCP/UDP 3478 neprojde), mobilní sítě
 a operátoři, iOS Safari/WebKit, chování telefonu na pozadí. Proto doporučený test v NÁHLEDU 1.3.0
 (`/band-app-preview-1p/`, testovací projekt, oddělená data) na obou telefonech PŘED vydáním.
+
+## Doplněno 2. 11. 2026 (po Testu B)
+- Test B (mobilní data ↔ Wi-Fi) proběhl v PRODUKČNÍ aplikaci (1.2.5 / 1.2.7, TURN „ne“, relay 0), ne v náhledu.
+- 🛠 Diagnostika hovorů → „🧪 Otestovat TURN“: bez hovoru a kamery načte údaje přes službu a zkusí relay kandidáty jen přes TURN; ukáže počty UDP/TCP, čas a kód chyby (bez adres a hesel).
+- Stav TURN ukazuje HTTP kód služby (např. „údaje načtené · HTTP 200“, „… · HTTP 403“).
+- Když se přímé spojení nenaváže (ICE failed nebo 15 s bez spojení) a TURN je k dispozici, další pokus je vynuceně jen přes TURN (iceTransportPolicy 'relay'), max 2×; v diagnostice „Cesta: … (zkouším jen přes TURN)“.
+- Testy: turn_relay.py scénáře 7 (self-test OK / 503 / TURN nedostupný) a 8 (přímá cesta zablokovaná → spojení přes relay).
